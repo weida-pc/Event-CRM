@@ -14,4 +14,6 @@ Research fetches only public HTTPS websites with bounded same-site traversal and
 
 Scoring is deterministic and explainable; evidence gaps remain visible. Attendance is an explicitly recorded boolean or unknown. Unknown is never converted to absence. Snapshot/source validation and monotonic revisions preserve the last good state on failures. Never weaken these checks to get a poll to pass.
 
-Report security issues privately to the repository owner through the repository's available private contact/security channel. Do not attach real credentials, attendee exports, database files or private URLs to a public issue.
+Security fixes target the current `0.1.x` release on the default branch. Review and update self-hosted installations before processing a new event; no automatic update service is included.
+
+Use the repository's **Security → Report a vulnerability** private reporting form when available. If it is unavailable, open a public issue asking only for a private reporting channel, without disclosing the vulnerability. Never attach exploit details, real credentials, attendee exports, database files or private URLs to a public issue.

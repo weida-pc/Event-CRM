@@ -132,6 +132,7 @@ class DashboardServer(ThreadingMixIn, HTTPServer):
         self.lock = threading.RLock()
         self.sessions = {}
         self.attempts = {}
+        self.global_attempts = deque()
         self.slots = threading.BoundedSemaphore(32)
         super().__init__(address, Handler)
         if not access.proxy:
@@ -368,7 +369,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def _login(self, body):
         now, peer = time.monotonic(), self.client_address[0]
+        if self.server.access.proxy:
+            forwarded = self.headers.get_all("X-Forwarded-For", [])
+            try:
+                if len(forwarded) != 1:
+                    raise ValueError("Missing client IP")
+                peer = str(ipaddress.ip_address(forwarded[0].strip()))
+            except ValueError:
+                self._error(400, "Trusted proxy must overwrite X-Forwarded-For with one client IP")
+                return
         with self.server.lock:
+            while self.server.global_attempts and self.server.global_attempts[0] <= now - 300:
+                self.server.global_attempts.popleft()
+            if len(self.server.global_attempts) >= 240:
+                self._error(429, "Sign-in temporarily limited")
+                return
             self.server.attempts = {key: times for key, times in self.server.attempts.items()
                                     if times and times[-1] > now - 300}
             if peer not in self.server.attempts and len(self.server.attempts) >= 1024:
@@ -381,6 +396,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._error(429, "Too many sign-in attempts; try again in five minutes")
                 return
             attempts.append(now)
+            self.server.global_attempts.append(now)
         token = body.get("token")
         if set(body) != {"token"} or not isinstance(token, str) or len(token) > 256:
             self._error(400, "Provide one token string only")
@@ -394,6 +410,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         with self.server.lock:
             attempts.pop()
+            if now in self.server.global_attempts:
+                self.server.global_attempts.remove(now)
             self.server.sessions = {key: value for key, value in self.server.sessions.items()
                                     if value["expires"] > now}
             if len(self.server.sessions) >= MAX_SESSIONS:

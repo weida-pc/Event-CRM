@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "event-crm"
 version = "0.1.0"
 description = "Private event lead prioritization, recorded attendance, and team delegation"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 

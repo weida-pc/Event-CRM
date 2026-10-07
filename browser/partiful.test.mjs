@@ -1,8 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {approvalLabel, checkInLabel, captureAttendance, partifulColumns, partifulIdentity,
   readVisibleRows, readCountButtons, validatedNamedRowCount, createCodexAdapter,
-  createPlaywrightAdapter} from './partiful.mjs';
+  createPlaywrightAdapter, normalizeLinkedIn} from './partiful.mjs';
+
+test('shared LinkedIn normalization vectors preserve optional evidence without blocking scans', () => {
+  for (const [input, expected] of JSON.parse(readFileSync(new URL('../tests/fixtures/linkedin.json', import.meta.url), 'utf8'))) {
+    assert.equal(normalizeLinkedIn(input), expected);
+  }
+});
+
+test('noncanonical and missing profile answers do not abort complete capture', async () => {
+  const first = row(0), second = row(1);
+  first.linkedin_url = 'https://uk.linkedin.com/in/synthetic-0?utm_source=share';
+  second.linkedin_url = 'not provided';
+  const snapshot = await captureAttendance(fake({approved: [first,second]}), config());
+  assert.equal(snapshot.guests[0].linkedin_url, 'https://www.linkedin.com/in/synthetic-0');
+  assert.equal(snapshot.guests[1].linkedin_url, '');
+});
 
 const config = () => ({event: {provider: 'partiful', id: 'synthetic', url: 'https://partiful.com/e/synthetic'},
   authorization: {host_confirmed: true, professional_fields_confirmed: true, team_sharing_confirmed: true},

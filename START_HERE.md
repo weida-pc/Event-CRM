@@ -48,7 +48,7 @@ python -m event_crm demo --directory runtime/demo
 python -m event_crm verify --config runtime/demo/event.json
 ```
 
-Use Python 3.11 or later (`python3` on systems where that is the installed name). Python runs directly from the clone with the standard library; installation is optional. Node.js 20+ is needed only for the browser reader's offline tests/tool integration, not the core Python app. Private repository links require repository access; the same code works from a public mirror authorized by its owner.
+Use Python 3.11 or later (`python3` on systems where that is the installed name). Python runs directly from the clone with the standard library; installation is optional. Node.js 22+ is needed only for the browser reader's offline tests/tool integration, not the core Python app. Run `node --test browser/partiful.test.mjs` to verify the browser reader; with Node installed, the Python suite also exercises the cross-language capture/import path. Repository access does not grant access to an event host's accounts or guest data.
 
 Optional CI setup uses `examples/ci-tests.yml`. Installing it into `.github/workflows/tests.yml` needs repository-owner approval and GitHub workflow permission; it is not required to run the app. Do not broaden account permissions solely to enable optional CI.
 
@@ -92,7 +92,7 @@ Each rule has `id`, `field`, `op`, `value`, `points`, `reason`, and optional `pr
 
 Map answer values from the event's actual registration options before scoring. Prefer exact values; `contains` can misread negation and should be used only after review. Numeric rules accept a single unambiguous quantity (including K/M/B suffix), not an assumed endpoint of a range. Use exact bucket rules for ranges. Missing answers contribute no positive evidence, remain visible as unknown, and never remove a guest by themselves.
 
-`min_score` selects the initial audience cohort. The default `ranking: value_first` orders priority group → score → recorded check-in. `attendance_first` orders priority group → recorded check-in → score. An explicit low-priority rule keeps a non-fit group below others even when checked in. If priority rules conflict, the lowest matched priority wins. Score points are an explainable **fit heuristic**, not a probability, verified buying intent or expected-dollar claim. Show reasons alongside the score.
+`min_score` selects the initial audience cohort. The default `ranking: value_first` orders priority group → score → recorded check-in. `attendance_first` orders priority group → recorded check-in → score. Among included guests, an explicit low-priority rule keeps a non-fit group below others even when checked in. A guest below `min_score` is excluded rather than placed last; lower the cutoff deliberately if that group should remain visible. If priority rules conflict, the lowest matched priority wins. Score points are an explainable **fit heuristic**, not a probability, verified buying intent or expected-dollar claim. Show reasons alongside the score.
 
 The dashboard automatically offers answer-filter buttons for configured questions with available answers. Correlation here means a question is selected as relevant to an approved ICP; it is not a statistically proven causal relationship. Do not claim statistical correlation without outcome data and a separate analysis.
 
@@ -111,6 +111,8 @@ python -m event_crm verify --config runtime/my-event/event.json
 `doctor` is a local configuration check; it does not prove credentials work. `sync --initial` is the explicit read-only preflight. It validates exact event/calendar binding and complete pagination, imports only mapped professional fields, and uses explicit ticket check-in evidence. Missing/ambiguous attendance stays unknown at initialization; live updates require a verified boolean for every tracked identity. Never treat approval, registration time or ticket presence as attendance.
 
 Review the resulting audience counts, top/bottom scored examples, answer mappings, missing portraits and ownership. Confirm they fit the approved ICP before sharing. Initial assignments balance lead counts in ranked order; they do not assert equal revenue potential.
+
+Updates are all-or-nothing: a single tracked guest with unknown attendance, a changed identity or a missing source row pauses the entire attendance feed. Luma registrations with no tickets or multiple tickets cannot establish person-level attendance. Confirm every tracked identity can provide explicit attendance during preflight; do not silently drop people, infer absence or weaken validation to make monitoring pass.
 
 ### Partiful
 
@@ -175,7 +177,7 @@ python -m event_crm serve --config runtime/my-event/event.json
 
 Share each token privately with its intended recipient. Open `http://127.0.0.1:8765` for local preview and enter it in the login form. Tokens are submitted in the request body, then exchanged for HttpOnly cookies; never place them in URLs or localStorage. Local HTTP is only for loopback on your own machine.
 
-For phones/remote team access, use your own HTTPS reverse proxy in front of this service. Configure `EVENT_CRM_PUBLIC_ORIGIN=https://your-approved-domain`, `EVENT_CRM_TRUSTED_TLS_PROXY=1`, and exact `EVENT_CRM_TRUSTED_PROXY_IPS`. Keep the backend private/firewalled, preserve Host, and set `X-Forwarded-Proto: https` only at your trusted proxy. Never expose the backend directly or trust arbitrary forwarded headers. TLS certificates, DNS, server access and deployment approval belong to the host; this repository does not provision a cloud account automatically. Serve only application routes, never the clone, runtime directory, database, raw snapshots or research packets.
+For phones/remote team access, use your own HTTPS reverse proxy in front of this service. Configure `EVENT_CRM_PUBLIC_ORIGIN=https://your-approved-domain`, `EVENT_CRM_TRUSTED_TLS_PROXY=1`, and exact `EVENT_CRM_TRUSTED_PROXY_IPS`. Keep the backend private/firewalled, preserve Host, and set `X-Forwarded-Proto: https` only at your trusted proxy. The proxy must overwrite `X-Forwarded-For` with exactly one validated client IP, not append or forward an untrusted header chain; hosted logins reject missing or ambiguous client IPs. Login limits apply per client plus a bounded global limit. Never expose the backend directly or trust arbitrary forwarded headers. TLS certificates, DNS, server access and deployment approval belong to the host; this repository does not provision a cloud account automatically. Serve only application routes, never the clone, runtime directory, database, raw snapshots or research packets.
 
 For example, on an approved host with Caddy already installed and the chosen DNS name pointing to it, use this site block (substitute the approved name). See [Caddy's reverse-proxy documentation](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy) for its header and upstream settings:
 
@@ -184,6 +186,7 @@ crm.your-domain.example {
     reverse_proxy 127.0.0.1:8765 {
         header_up Host {host}
         header_up X-Forwarded-Proto https
+        header_up X-Forwarded-For {remote_host}
     }
 }
 ```
@@ -210,7 +213,7 @@ For Partiful, use the **existing agent's native recurring task mechanism** when 
 
 > Until END_WITH_TIMEZONE, once per minute use the host-authorized browser and browser/partiful.mjs to capture both Approved and Can't Go for EXACT_EVENT_URL. Read only mapped professional identity and explicit check-in controls. Save the complete normalized snapshot to CANONICAL_SNAPSHOT. Run `python -m event_crm ingest --config CONFIG --snapshot CANONICAL_SNAPSHOT`. Allow one full retry for a changing source; otherwise preserve the last good state and report intervention failures. Never click attendance/approval controls, infer attendance from RSVP, expand the cohort, reassign owners, enrich photos, read contact/sensitive fields, or send messages. At END perform one final scan only within the configured grace period, then disable this exact scheduled task. After grace, disable without writing. Keep unchanged successful runs quiet. Report final completion. Do not create duplicate monitors.
 
-The Python monitor's `--snapshot` option can ingest **new** browser-generated snapshots, but does not drive a browser or replace that scheduled capture. Prefer one direct capture+ingest task rather than two competing writers. On login expiration or lost host access, request human reconnection; never fall back to stored cookies or another person's account.
+The Python monitor's `--snapshot` option can ingest **new** browser-generated snapshots, but does not drive a browser or replace that scheduled capture. Its final scan must start at or after the deadline; an older queued snapshot does not count. It retries failed final attempts at the configured interval, bounded by the remaining grace period, then exits with failure if no valid final scan arrives. It never writes attendance after grace expires. Prefer one direct capture+ingest task rather than two competing writers. On login expiration or lost host access, request human reconnection; never fall back to stored cookies or another person's account.
 
 ## 8. Verify completion and operations
 

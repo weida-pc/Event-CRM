@@ -1,0 +1,20 @@
+[
+  ["https://www.linkedin.com/in/synthetic", "https://www.linkedin.com/in/synthetic"],
+  ["https://www.linkedin.com/in/synthetic?utm_source=share", "https://www.linkedin.com/in/synthetic"],
+  ["https://uk.linkedin.com/in/synthetic/", "https://www.linkedin.com/in/synthetic"],
+  ["linkedin.com/in/synthetic", "https://www.linkedin.com/in/synthetic"],
+  ["  HTTPS://LINKEDIN.COM:443/in/synthetic#details  ", "https://www.linkedin.com/in/synthetic"],
+  ["https://www.linkedin.com/in/synthetic-%E4%B8%80", "https://www.linkedin.com/in/synthetic-%E4%B8%80"],
+  ["not provided", ""],
+  ["No response", ""],
+  [null, ""],
+  [123, ""],
+  ["http://www.linkedin.com/in/synthetic", ""],
+  ["https://www.linkedin.com:444/in/synthetic", ""],
+  ["https://linkedin.com.invalid/in/synthetic", ""],
+  ["https://www.linkedin.com/company/synthetic", ""],
+  ["https://www.linkedin.com/in/", ""],
+  ["https://www.linkedin.com/in/synthetic/../other", ""],
+  ["https://www.linkedin.com/in/synthetic profile", ""],
+  ["javascript:alert(1)", ""]
+]

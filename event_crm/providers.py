@@ -13,6 +13,7 @@ import re
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -61,7 +62,19 @@ def _text(value, *, required=False, redact=False):
     return value
 
 
+def normalize_linkedin(value):
+    """Optional evidence, never a scan gate. Keep in sync with the JS reader."""
+    if not isinstance(value, str) or len(value) > 10000:
+        return ""
+    match = re.fullmatch(
+        r"(?:https://)?(?:(?:www|[a-z]{2})\.)?linkedin\.com(?::443)?"
+        r"(/in/[A-Za-z0-9_%.-]+/?)(?:[?#][^\x00-\x20\x7f]*)?", value.strip(" \t\r\n"), re.I | re.ASCII)
+    return "https://www.linkedin.com" + match[1].rstrip("/") if match else ""
+
+
 def _safe_url(value, *, linkedin=False):
+    if linkedin:
+        return normalize_linkedin(value)
     value = _text(value)
     if not value:
         return ""
@@ -71,10 +84,8 @@ def _safe_url(value, *, linkedin=False):
                  and not parsed.password and parsed.port in (None, 443))
     except ValueError:
         valid = False
-    if not valid or (linkedin and parsed.hostname not in ("linkedin.com", "www.linkedin.com")):
+    if not valid:
         raise ValueError("Invalid professional URL")
-    if linkedin and (not parsed.path.startswith("/in/") or parsed.query or parsed.fragment):
-        raise ValueError("LinkedIn must be a canonical https profile URL without tracking parameters")
     return value
 
 
@@ -132,9 +143,15 @@ def validate_snapshot(snapshot, config):
     if type(snapshot.get("schema_version")) is not int or snapshot.get("schema_version") != 1 or snapshot.get("complete") is not True:
         raise ValueError("Only complete schema version 1 snapshots are accepted")
     for key, expected in (("provider", event["provider"]), ("event_id", event["id"]),
-                          ("event_url", event["url"]), ("calendar_id", event.get("calendar_id"))):
+                          ("event_url", event["url"])):
         if snapshot.get(key) != expected:
             raise ValueError("Snapshot does not match the configured provider/event/calendar")
+    if event["provider"] == "luma":
+        calendar_matches = snapshot.get("calendar_id") == event.get("calendar_id")
+    else:
+        calendar_matches = snapshot.get("calendar_id") in (None, "") and event.get("calendar_id") in (None, "")
+    if not calendar_matches:
+        raise ValueError("Snapshot does not match the configured provider/event/calendar")
     if event["provider"] not in ("luma", "partiful", "demo"):
         raise ValueError("Unsupported provider")
     start = _timestamp(snapshot.get("scan_started_at"))
@@ -309,6 +326,8 @@ def _get(opener, key, calendar_id, path, query=None):
         raise ValueError(f"Luma read failed with HTTP {error.code}; last good data is preserved") from None
     except URLError:
         raise ValueError("Luma read failed; last good data is preserved") from None
+    except HTTPException:
+        raise ValueError("Luma response was interrupted; last good data is preserved") from None
     if not isinstance(payload, dict):
         raise ValueError("Unexpected Luma response shape")
     return payload
@@ -320,9 +339,12 @@ def _luma_binding(detail, event):
             ("access", "manage"), ("platform", "luma"))):
         raise ValueError("Luma event/calendar binding or host access does not match")
     counts = detail.get("guest_counts", {})
+    if not isinstance(counts, dict):
+        raise ValueError("Luma guest counts have an unexpected shape")
     result = {}
     for status in LUMA_COUNT_STATUSES:
-        count = counts.get(status, {}).get("guests")
+        entry = counts.get(status)
+        count = entry.get("guests") if isinstance(entry, dict) else None
         if type(count) is not int or count < 0:
             raise ValueError("Luma event is missing authoritative guest counts")
         result[status] = count
@@ -358,7 +380,7 @@ def _luma_checkin(raw):
 
 def _luma_question_mapping(detail, fields, questions):
     source = detail.get("registration_questions", [])
-    if not isinstance(source, list):
+    if not isinstance(source, list) or any(not isinstance(q, dict) for q in source):
         raise ValueError("Luma registration question schema is unavailable")
     mapping = {}
     for label in set(fields.values()) | {q["label"] for q in questions}:

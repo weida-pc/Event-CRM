@@ -33,7 +33,7 @@ def write_json(path, value):
 def template(provider="luma", demo=False):
     now = utcnow()
     return {"schema_version": 1,
-            "event": {"provider": "demo" if demo else provider, "id": "synthetic-demo" if demo else "REPLACE_EVENT_ID", "calendar_id": "REPLACE_CALENDAR_ID" if provider == "luma" and not demo else "", "url": "https://example.com/events/demo" if demo else ("https://luma.com/REPLACE_SLUG" if provider == "luma" else "https://partiful.com/e/REPLACE_EVENT_ID"), "name": "Example Growth Summit" if demo else "Your event", "starts_at": (now-timedelta(minutes=5)).isoformat(), "ends_at": (now+timedelta(hours=2)).isoformat()},
+            "event": {"provider": "demo" if demo else provider, "id": "synthetic-demo" if demo else "REPLACE_EVENT_ID", "calendar_id": "REPLACE_CALENDAR_ID" if provider == "luma" and not demo else None, "url": "https://example.com/events/demo" if demo else ("https://luma.com/REPLACE_SLUG" if provider == "luma" else "https://partiful.com/e/REPLACE_EVENT_ID"), "name": "Example Growth Summit" if demo else "Your event", "starts_at": (now-timedelta(minutes=5)).isoformat(), "ends_at": (now+timedelta(hours=2)).isoformat()},
             "authorization": {"host_confirmed": demo, "professional_fields_confirmed": demo, "team_sharing_confirmed": demo},
             "state_dir": "state", "poll_seconds": 60, "max_age_seconds": 180, "grace_seconds": 180,
             "team": [{"id": "alex", "label": "Alex"}, {"id": "sam", "label": "Sam"}],
@@ -89,6 +89,7 @@ def monitor(config, snapshot_path=None):
             time.sleep(min(60, max(0.1, (timestamp(event["starts_at"])-now).total_seconds())))
             continue
         final = now >= end
+        failed = False
         try:
             snapshot = load_snapshot(snapshot_path, config) if snapshot_path else fetch_luma(config)
             if final and timestamp(snapshot["scan_started_at"]) < end:
@@ -102,12 +103,14 @@ def monitor(config, snapshot_path=None):
             elif final:
                 raise ValueError("Final run requires a new source scan after the monitoring deadline")
         except (ValueError, OSError, RuntimeError) as exc:
+            failed = True
             print(json.dumps({"ok": False, "error": str(exc), "last_good_preserved": True}), file=sys.stderr, flush=True)
-            if final:
-                return {"ok": False, "monitor": "ended", "final_scan": "failed_last_good_preserved"}
-        if final:
+        if final and not failed:
             return {"monitor": "ended", "final_scan": "verified"}
-        time.sleep(max(0.1, min(config["poll_seconds"], (end-utcnow()).total_seconds())))
+        remaining = ((grace_end if final else end)-utcnow()).total_seconds()
+        if final and remaining <= 0:
+            return {"ok": False, "monitor": "ended", "final_scan": "failed_last_good_preserved"}
+        time.sleep(max(0.1, min(config["poll_seconds"], remaining)))
 
 
 def main(argv=None):

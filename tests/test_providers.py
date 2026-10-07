@@ -6,12 +6,15 @@ import io
 import json
 import tempfile
 import unittest
+import shutil
+import subprocess
+from http.client import IncompleteRead
 from pathlib import Path
 from unittest.mock import patch
 
 from event_crm.providers import (
     _NoRedirect, _luma_checkin, fetch_luma, import_csv, load_snapshot,
-    partiful_identity, validate_snapshot,
+    partiful_identity, validate_snapshot, normalize_linkedin,
 )
 
 
@@ -90,6 +93,34 @@ class Opener:
 
 
 class SnapshotTests(unittest.TestCase):
+    def test_shared_linkedin_normalization_vectors(self):
+        vectors = json.loads((Path(__file__).parent / "fixtures" / "linkedin.json").read_text())
+        for value, expected in vectors:
+            self.assertEqual(normalize_linkedin(value), expected)
+
+    @unittest.skipUnless(shutil.which("node"), "Node is optional for the Python-only installation")
+    def test_actual_js_capture_is_accepted_by_partiful_init_template(self):
+        from event_crm.cli import template
+        from event_crm.core import validate_config
+        cfg = template("partiful")
+        cfg["event"].update(id="synthetic", url="https://partiful.com/e/synthetic")
+        cfg["authorization"] = {key: True for key in cfg["authorization"]}
+        cfg["audiences"][0]["icp"]["approved"] = True
+        validate_config(cfg)
+        fixture = Path(__file__).parent / "fixtures" / "partiful_capture.mjs"
+        result = subprocess.run([shutil.which("node"), str(fixture)], input=json.dumps(cfg),
+                                capture_output=True, text=True, encoding="utf-8", check=True, timeout=20)
+        data = json.loads(result.stdout)
+        self.assertIsNone(data["calendar_id"])
+        self.assertEqual(len(validate_snapshot(data, cfg)["guests"]), 2)
+        cfg["event"]["calendar_id"] = ""  # Accept older generated templates too.
+        self.assertEqual(len(validate_snapshot(data, cfg)["guests"]), 2)
+        cfg["event"]["calendar_id"] = "cal-unrelated"
+        with self.assertRaises(ValueError):
+            validate_config(cfg)
+        with self.assertRaises(ValueError):
+            validate_snapshot(data, cfg)
+
     def test_clean_copy_and_boolean(self):
         original = snapshot()
         result = validate_snapshot(original, config())
@@ -243,6 +274,30 @@ class CsvTests(unittest.TestCase):
 
 
 class LumaTests(unittest.TestCase):
+    def test_optional_linkedin_share_link_and_invalid_answers_do_not_abort(self):
+        for value, expected in (("https://uk.linkedin.com/in/synthetic?utm_source=share", "https://www.linkedin.com/in/synthetic"), ("not provided", "")):
+            raw = raw_guest()
+            raw["registration_answers"][2]["value"] = value
+            data, _ = self.fetch([{"entries": [raw], "has_more": False}])
+            self.assertEqual(data["guests"][0]["linkedin_url"], expected)
+
+    def test_shape_drift_fails_with_controlled_validation_error(self):
+        for mutate in (lambda e: e.update(guest_counts=[]),
+                       lambda e: e["guest_counts"].update(approved=[]),
+                       lambda e: e.update(registration_questions=[None])):
+            event = detail()
+            mutate(event)
+            with self.assertRaises(ValueError):
+                self.fetch(before=event)
+
+    def test_interrupted_http_response_becomes_retryable_validation_error(self):
+        from unittest.mock import Mock
+        client = Mock()
+        client.open.side_effect = IncompleteRead(b"")
+        with patch.dict("os.environ", {"LUMA_API_KEY": "synthetic-offline-value"}):
+            with self.assertRaisesRegex(ValueError, "interrupted"):
+                fetch_luma(config(), opener=client)
+
     def fetch(self, pages=None, before=None, after=None, calendar=None):
         before = before or detail()
         client = Opener([calendar or {"id": "cal-synthetic"}, before,

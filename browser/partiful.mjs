@@ -27,6 +27,7 @@ export function approvalLabel(text) {
 
 export function validateConfig(config) {
   if (config?.event?.provider !== 'partiful' || !config.event.id) throw new Error('Partiful event binding required');
+  if (config.event.calendar_id != null && config.event.calendar_id !== '') throw new Error('Partiful has no calendar ID');
   const url = new URL(config.event.url);
   if (url.protocol !== 'https:' || url.hostname !== 'partiful.com' || url.username || url.password ||
       url.search || url.hash || url.port || url.pathname !== '/e/' + config.event.id) {
@@ -142,17 +143,16 @@ export async function partifulIdentity(eventUrl, name, linkedinUrl, company) {
   return [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('');
 }
 
+export function normalizeLinkedIn(value) {
+  if (typeof value !== 'string' || value.length > 10000) return '';
+  const match = /^(?:https:\/\/)?(?:(?:www|[a-z]{2})\.)?linkedin\.com(?::443)?(\/in\/[A-Za-z0-9_%.-]+\/?)(?:[?#][^\x00-\x20\x7f]*)?$/i.exec(value.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, ''));
+  return match ? 'https://www.linkedin.com' + match[1].replace(/\/$/, '') : '';
+}
+
 function normalizedRow(row, config) {
   const name = cleanText(row.name), company = cleanText(row.company), title = cleanText(row.title);
   if (!name) throw new Error('Guest display name is unavailable');
-  const linkedin = cleanText(row.linkedin_url);
-  if (linkedin) {
-    const url = new URL(linkedin);
-    if (url.protocol !== 'https:' || !['linkedin.com', 'www.linkedin.com'].includes(url.hostname) ||
-        !url.pathname.startsWith('/in/') || url.username || url.password || url.search || url.hash || url.port) {
-      throw new Error('LinkedIn must be an exact canonical profile URL');
-    }
-  }
+  const linkedin = normalizeLinkedIn(row.linkedin_url);
   const approvedIds = new Set(config.questions.map(question => question.id));
   if (!row.answers || Object.keys(row.answers).some(id => !approvedIds.has(id))) throw new Error('Unmapped question answer');
   return {name, company, title, linkedin_url: linkedin,

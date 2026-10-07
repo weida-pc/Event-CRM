@@ -292,12 +292,31 @@ class ServerTests(unittest.TestCase):
         headers = {"Host": "desk.example"}
         self.assertEqual(self.call("GET", "/", headers=headers)[0], 403)
         headers["X-Forwarded-Proto"] = "https"
+        headers["X-Forwarded-For"] = "192.0.2.1"
         code, response_headers, _ = self.call("POST", "/api/login", {"token": self.view_token}, headers)
         self.assertEqual(code, 200)
         self.assertIn("; Secure", response_headers["Set-Cookie"])
         self.assertIn("Strict-Transport-Security", response_headers)
         self.server.access.proxy_ips = {"192.0.2.10"}
         self.assertEqual(self.call("GET", "/", headers=headers)[0], 403)
+
+    def test_proxy_rate_limit_is_per_trusted_client_not_whole_team(self):
+        self.server.access.proxy = True
+        self.server.access.origin = self.origin = "https://desk.example"
+        self.server.access.proxy_ips = {"127.0.0.1"}
+        headers = {"Host": "desk.example", "X-Forwarded-Proto": "https", "X-Forwarded-For": "192.0.2.1"}
+        for _ in range(12):
+            self.assertEqual(self.call("POST", "/api/login", {"token": "invalid"}, headers)[0], 401)
+        self.assertEqual(self.call("POST", "/api/login", {"token": self.view_token}, headers)[0], 429)
+        headers["X-Forwarded-For"] = "192.0.2.2"
+        self.assertEqual(self.call("POST", "/api/login", {"token": self.view_token}, headers)[0], 200)
+        for invalid in ("unknown", "192.0.2.1, 192.0.2.2", ""):
+            headers["X-Forwarded-For"] = invalid
+            self.assertEqual(self.call("POST", "/api/login", {"token": self.view_token}, headers)[0], 400)
+
+    def test_global_login_ceiling_is_bounded(self):
+        self.server.global_attempts.extend([time.monotonic()] * 240)
+        self.assertEqual(self.call("POST", "/api/login", {"token": self.view_token})[0], 429)
 
 
 if __name__ == "__main__":

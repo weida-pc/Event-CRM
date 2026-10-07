@@ -81,6 +81,8 @@ def validate_config(config):
         raise ValueError("Use the canonical event URL without query or fragment")
     if provider == "partiful" and (url.hostname != "partiful.com" or url.path != "/e/" + event["id"]):
         raise ValueError("Partiful event ID and exact event URL must match")
+    if provider != "luma" and event.get("calendar_id") not in (None, ""):
+        raise ValueError("Only Luma events may have a calendar ID")
     if provider == "luma":
         if not re.fullmatch(r"evt-[A-Za-z0-9]+", event["id"]) or not re.fullmatch(r"cal-[A-Za-z0-9]+", event.get("calendar_id", "")):
             raise ValueError("Luma requires canonical evt-* and cal-* IDs")

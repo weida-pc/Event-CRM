@@ -64,7 +64,10 @@ class MonitorTests(unittest.TestCase):
         store.dashboard.return_value = {"revision": 1}
         scan = {"captured_at": now.isoformat(), "scan_started_at": (now+timedelta(seconds=scan_offset)).isoformat()}
         store.ingest.return_value = {"revision": 2}
-        with patch("event_crm.cli.Store", return_value=store), patch("event_crm.cli.utcnow", return_value=now), patch("event_crm.providers.load_snapshot", side_effect=ValueError("synthetic source failure") if fail else None, return_value=scan), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        clock = [now]
+        def advance(seconds):
+            clock[0] += timedelta(seconds=seconds)
+        with patch("event_crm.cli.Store", return_value=store), patch("event_crm.cli.utcnow", side_effect=lambda: clock[0]), patch("event_crm.cli.time.sleep", side_effect=advance), patch("event_crm.providers.load_snapshot", side_effect=ValueError("synthetic source failure") if fail else None, return_value=scan), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             result = monitor(config, "synthetic.json")
         return result, store
 
@@ -82,6 +85,23 @@ class MonitorTests(unittest.TestCase):
         result, store = self.run_monitor(utcnow())
         self.assertEqual(result["final_scan"], "verified")
         store.ingest.assert_called_once()
+
+    def test_final_waits_for_delayed_browser_snapshot_within_grace(self):
+        now = utcnow()
+        config = template(demo=True)
+        config["event"]["ends_at"] = now.isoformat()
+        store = Mock()
+        store.dashboard.return_value = {"revision": 1}
+        store.ingest.return_value = {"revision": 2}
+        clock = [now]
+        def advance(seconds):
+            clock[0] += timedelta(seconds=seconds)
+        old = {"scan_started_at": (now-timedelta(seconds=30)).isoformat(), "captured_at": now.isoformat()}
+        fresh = {"scan_started_at": (now+timedelta(seconds=10)).isoformat(), "captured_at": (now+timedelta(seconds=20)).isoformat()}
+        with patch("event_crm.cli.Store", return_value=store), patch("event_crm.cli.utcnow", side_effect=lambda: clock[0]), patch("event_crm.cli.time.sleep", side_effect=advance), patch("event_crm.providers.load_snapshot", side_effect=[old, fresh]) as reader, redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(monitor(config, "synthetic.json")["final_scan"], "verified")
+        self.assertEqual(reader.call_count, 2)
+        store.ingest.assert_called_once_with(fresh)
 
     def test_after_grace_does_not_fetch_or_write(self):
         config = template(demo=True)

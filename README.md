@@ -44,13 +44,15 @@ Provider adapters produce an event-bound, allowlisted snapshot. A transactional 
 
 Luma monitoring can run in a normal bounded Python process. Partiful requires a browser-capable agent with host-authorized access; this repository does not supply a universal browser tool or undocumented Partiful API. CSV imports are point-in-time snapshots, not real-time connections. Registration field layouts must be mapped explicitly. Website-derived fit is a hypothesis for review, not verified purchase intent or a revenue prediction.
 
+Attendance updates are all-or-nothing: one missing, changed or attendance-unknown tracked identity pauses the entire feed and preserves its last good state. Luma group registrations and registrations without explicit ticket state need particular attention during the host-authorized preflight. Offline tests do not certify a live provider account or current browser layout.
+
 One event configuration uses one private state directory. Run separate instances for separate events. This release does not include billing, an email sender, an automatic paid enrichment service, per-audience security isolation, or automatic public-cloud provisioning.
 
 ## Verification
 
 ```sh
 python -m unittest discover -s tests -v
-node --test browser/*.test.mjs
+node --test browser/partiful.test.mjs
 python -m compileall -q event_crm
 python tools/privacy_check.py
 ```

@@ -8,5 +8,5 @@ Read [START_HERE.md](START_HERE.md) for the complete installation and host onboa
 - Attendance requires an explicit provider check-in signal. Missing data is unknown, never absence. Complete source validation and exact identities precede atomic updates. Preserve last good data on failure.
 - Keep assignment and attendance state independent of scoring and rerenders. Provider snapshots cannot overwrite team work.
 - No credentials in URLs or committed files. Public code does not imply public guest data; runtime is private by default.
-- Test using synthetic fixtures only: `python -m unittest discover -s tests -v` and `node --test browser/*.test.mjs`. Never use real event credentials during tests.
+- Test using synthetic fixtures only: `python -m unittest discover -s tests -v` and `node --test browser/partiful.test.mjs`. Never use real event credentials during tests.
 - Code edits use apply_patch. Preserve unrelated user changes. Do not deploy or start monitoring a real event as a side effect of developing this project.
