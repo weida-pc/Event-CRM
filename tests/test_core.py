@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from event_crm.cli import demo, template
 from event_crm.core import load_config, numeric_answer, rank_key, score_guest, utcnow, validate_config
-from event_crm.store import Store
+from event_crm.store import AssignmentConflict, Store
 
 
 class ScoringTests(unittest.TestCase):
@@ -166,6 +166,19 @@ class StoreTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.store.assign(alias, owner, status, actor)
         self.assertEqual(self.store.assign(alias, None, "new", "alex")["owner_id"], "")
+
+    def test_stale_team_edit_cannot_overwrite_newer_work(self):
+        old = self.store.dashboard()["audiences"][0]["records"][0]
+        expected = {"owner_id": old["owner_id"], "status": old["status"]}
+        self.store.assign(old["id"], "sam", "follow_up", "alex", expected=expected)
+        with self.assertRaises(AssignmentConflict):
+            Store(self.config).assign(old["id"], old["owner_id"], "done", "sam", expected=expected)
+        current = self.store.dashboard()["audiences"][0]["records"][0]
+        self.assertEqual((current["owner_id"], current["status"]), ("sam", "follow_up"))
+        with self.store.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM audit").fetchone()[0], 1)
+        self.store.assign(old["id"], None, "done", "sam", expected={"owner_id": "sam", "status": "follow_up"})
+        self.store.assign(old["id"], "alex", "new", "sam", expected={"owner_id": None, "status": "done"})
 
     def test_changed_icp_and_team_cannot_silently_change_cohort(self):
         for key in ("team", "audiences"):

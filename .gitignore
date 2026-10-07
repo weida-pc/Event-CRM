@@ -20,3 +20,6 @@ Thumbs.db
 *.pem
 *.key
 *.p12
+build/
+dist/
+*.egg-info/

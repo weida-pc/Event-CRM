@@ -19,6 +19,8 @@ import threading
 import time
 from urllib.parse import urlsplit
 
+from .store import AssignmentConflict
+
 
 ASSETS = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -340,19 +342,25 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.sessions.pop(session_key, None)
             self._reply(200, {"ok": True}, cookie=self._cookie("", 0))
         else:
-            if set(body) != {"id", "owner_id", "status"}:
-                self._error(400, "Provide id, owner_id, and status only")
+            if set(body) != {"id", "owner_id", "status", "expected_owner_id", "expected_status"}:
+                self._error(400, "Provide id, owner_id, status, expected_owner_id, and expected_status only")
                 return
             if (not isinstance(body["id"], str) or not body["id"] or len(body["id"]) > 128
                     or (body["owner_id"] is not None and not isinstance(body["owner_id"], str))
                     or body["owner_id"] not in {None, "", *[m["id"] for m in self.server.config["team"]]}
-                    or body["status"] not in ("new", "assigned", "contacted", "follow_up", "done")):
+                    or body["status"] not in ("new", "assigned", "contacted", "follow_up", "done")
+                    or (body["expected_owner_id"] is not None and not isinstance(body["expected_owner_id"], str))
+                    or body["expected_owner_id"] not in {None, "", *[m["id"] for m in self.server.config["team"]]}
+                    or body["expected_status"] not in ("new", "assigned", "contacted", "follow_up", "done")):
                 self._error(400, "Invalid assignment")
                 return
             try:
                 with self.server.lock:
-                    result = self.server.store.assign(body["id"], body["owner_id"] or None, body["status"], session["actor"])
+                    result = self.server.store.assign(body["id"], body["owner_id"] or None, body["status"], session["actor"],
+                        expected={"owner_id": body["expected_owner_id"], "status": body["expected_status"]})
                 self._reply(200, result)
+            except AssignmentConflict:
+                self._error(409, "A teammate changed this lead. Refresh and review their update before trying again.")
             except (ValueError, KeyError):
                 self._error(400, "Assignment could not be applied")
             except Exception:

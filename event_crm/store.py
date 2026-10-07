@@ -14,6 +14,10 @@ def identity(guest):
     return canonical([guest.get(k, "") for k in ("source_id", "name", "company", "linkedin_url")])
 
 
+class AssignmentConflict(ValueError):
+    """A teammate changed the work state after the caller last read it."""
+
+
 class Store:
     def __init__(self, config):
         self.config = config
@@ -135,16 +139,28 @@ class Store:
             audiences.append({"id": audience["id"], "label": audience["label"], "ranking": audience["ranking"], "records": records})
         return {"event": {k: self.config["event"][k] for k in ("name", "provider", "starts_at", "ends_at")}, "revision": int(meta.get("revision", "0")), "captured_at": meta.get("captured_at"), "team": self.config["team"], "questions": self.config["questions"], "audiences": audiences}
 
-    def assign(self, alias, owner_id, status, actor):
+    def assign(self, alias, owner_id, status, actor, *, expected=None):
         members = {m["id"] for m in self.config["team"]}
         owner_id = owner_id or ""
         if (owner_id and owner_id not in members) or actor not in members:
             raise ValueError("Unknown team member")
         if status not in {"new", "assigned", "contacted", "follow_up", "done"}:
             raise ValueError("Unknown work status")
+        if expected is not None and (not isinstance(expected, dict)
+                or set(expected) != {"owner_id", "status"}
+                or (expected["owner_id"] is not None and not isinstance(expected["owner_id"], str))
+                or expected["owner_id"] not in {None, "", *members}
+                or expected["status"] not in ("new", "assigned", "contacted", "follow_up", "done")):
+            raise ValueError("Invalid expected work state")
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             self.assert_binding(db)
+            if expected is not None:
+                current = db.execute("SELECT owner_id,status FROM guests WHERE alias=?", (alias,)).fetchone()
+                if current is None:
+                    raise ValueError("Unknown guest alias")
+                if (current["owner_id"], current["status"]) != (expected["owner_id"] or "", expected["status"]):
+                    raise AssignmentConflict("A teammate changed this lead; refresh before trying again")
             result = db.execute("UPDATE guests SET owner_id=?, status=? WHERE alias=?", (owner_id, status, alias))
             if result.rowcount != 1:
                 raise ValueError("Unknown guest alias")

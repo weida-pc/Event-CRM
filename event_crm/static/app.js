@@ -309,7 +309,7 @@ $('guest-list').addEventListener('change', async (event) => {
   const control = event.target.closest('select[data-field]'); if (!control) return;
   const card = control.closest('.guest-card');
   const guest = selectedAudience().records.find((record) => record.id === card.dataset.id);
-  const body = {id: guest.id, owner_id: guest.owner_id || null, status: guest.status || 'new'};
+  const body = {id: guest.id, owner_id: guest.owner_id || null, status: guest.status || 'new', expected_owner_id: guest.owner_id || null, expected_status: guest.status || 'new'};
   body[control.dataset.field] = control.value || null;
   state.editRevision += 1; state.pending += 1; card.querySelectorAll('select').forEach((select) => { select.disabled = true; });
   try {
@@ -317,8 +317,20 @@ $('guest-list').addEventListener('change', async (event) => {
     if (!state.data) return;
     for (const audience of state.data.audiences) for (const record of audience.records) if (record.id === guest.id) { record.owner_id = body.owner_id; record.status = body.status; }
     toast('Team assignment saved');
-  } catch (error) { if (error.status === 401) signedOut(); else toast(error.message, true); }
-  finally { state.pending -= 1; if (state.data && !state.pending) renderGuests(); }
+  } catch (error) {
+    if (error.status === 401) signedOut();
+    else {
+      toast(error.message, true);
+      if (error.status === 409) state.refreshAfterEdit = true;
+    }
+  }
+  finally {
+    state.pending -= 1;
+    if (state.data && !state.pending) {
+      renderGuests();
+      if (state.refreshAfterEdit) { state.refreshAfterEdit = false; refresh(); }
+    }
+  }
 });
 $('guest-list').addEventListener('focusout', () => {
   setTimeout(() => { if (state.refreshAfterEdit && !document.activeElement?.closest('.card-actions')) { state.refreshAfterEdit = false; refresh(); } }, 0);

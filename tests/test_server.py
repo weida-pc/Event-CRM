@@ -11,6 +11,7 @@ import time
 import unittest
 
 from event_crm.server import AccessConfig, create_server
+from event_crm.store import AssignmentConflict
 
 
 class FakeStore:
@@ -33,9 +34,12 @@ class FakeStore:
     def dashboard(self):
         return deepcopy(self.data)
 
-    def assign(self, alias, owner_id, status, actor):
+    def assign(self, alias, owner_id, status, actor, *, expected=None):
         if alias != "guest-alias":
             raise ValueError("Missing alias")
+        current = self.data["audiences"][0]["records"][0]
+        if expected != {"owner_id": current["owner_id"], "status": current["status"]}:
+            raise AssignmentConflict("Synthetic stale team edit")
         self.calls.append((alias, owner_id, status, actor))
         self.data["audiences"][0]["records"][0].update(owner_id=owner_id, status=status)
         return {"id": alias, "owner_id": owner_id, "status": status}
@@ -86,7 +90,8 @@ class ServerTests(unittest.TestCase):
         return headers
 
     def assignment(self, **overrides):
-        body = {"id": "guest-alias", "owner_id": "host", "status": "assigned"}
+        body = {"id": "guest-alias", "owner_id": "host", "status": "assigned",
+                "expected_owner_id": None, "expected_status": "new"}
         body.update(overrides)
         return self.call("POST", "/api/assignment", body, {"X-CSRF-Token": self.csrf or ""})
 
@@ -156,9 +161,23 @@ class ServerTests(unittest.TestCase):
 
     def test_assignment_input_types_fail_cleanly(self):
         self.login(team=True)
-        for overrides in ({"id": []}, {"owner_id": []}, {"status": []}, {"owner_id": "not-on-team"}, {"status": "absent"}, {"id": "missing"}):
+        for overrides in ({"id": []}, {"owner_id": []}, {"status": []}, {"owner_id": "not-on-team"}, {"status": "absent"}, {"id": "missing"}, {"expected_owner_id": []}, {"expected_status": []}):
             with self.subTest(overrides=overrides):
                 self.assertEqual(self.assignment(**overrides)[0], 400)
+        self.assertEqual(self.store.calls, [])
+
+    def test_stale_assignment_returns_conflict_and_preserves_work(self):
+        self.login(team=True)
+        self.assertEqual(self.assignment()[0], 200)
+        self.assertEqual(self.assignment(status="done")[0], 409)
+        self.assertEqual(len(self.store.calls), 1)
+        self.assertEqual(self.store.data["audiences"][0]["records"][0]["status"], "assigned")
+        self.assertEqual(self.assignment(status="done", expected_owner_id="host", expected_status="assigned")[0], 200)
+
+    def test_browser_assignment_requires_expected_state(self):
+        self.login(team=True)
+        body = {"id": "guest-alias", "owner_id": "host", "status": "assigned"}
+        self.assertEqual(self.call("POST", "/api/assignment", body, {"X-CSRF-Token": self.csrf})[0], 400)
         self.assertEqual(self.store.calls, [])
 
     def test_logout_revokes_session(self):
@@ -210,13 +229,13 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(payload, self.server.store.dashboard())
             record = payload["audiences"][0]["records"][0]
             owner = config["team"][1]["id"]
-            code, _, _ = self.assignment(id=record["id"], owner_id=owner, status="follow_up")
+            code, _, _ = self.assignment(id=record["id"], owner_id=owner, status="follow_up", expected_owner_id=record["owner_id"], expected_status=record["status"])
             self.assertEqual(code, 200)
             persisted = Store(config).dashboard()["audiences"][0]["records"][0]
             self.assertEqual(persisted["owner_id"], owner)
             self.assertEqual(persisted["status"], "follow_up")
             self.assertEqual(persisted["checked_in"], record["checked_in"])
-            self.assertEqual(self.assignment(id=record["id"], owner_id=None, status="new")[0], 200)
+            self.assertEqual(self.assignment(id=record["id"], owner_id=None, status="new", expected_owner_id=owner, expected_status="follow_up")[0], 200)
             self.assertFalse(Store(config).dashboard()["audiences"][0]["records"][0]["owner_id"])
 
     def test_stale_and_ended_do_not_change_attendance(self):
