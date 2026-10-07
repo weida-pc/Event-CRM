@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Event CRM · Team desk</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <main id="login-view" class="login-wrap">
+    <section class="login-card">
+      <span class="eyebrow">EVENT CRM / PRIVATE TEAM DESK</span>
+      <div class="brand-mark" aria-hidden="true">e<span>.</span></div>
+      <h1>A good conversation<br>starts with context.</h1>
+      <p class="muted">Your event, your people, one shared view. Enter your personal access token to open the team desk.</p>
+      <form id="login-form">
+        <label for="access-token">Access token</label>
+        <input id="access-token" name="token" type="password" autocomplete="off" required maxlength="256" placeholder="Your private access token">
+        <button class="button primary" type="submit">Open team desk <span aria-hidden="true">↗</span></button>
+        <p id="login-error" class="error" role="alert"></p>
+      </form>
+      <p class="fine-print">Tokens stay out of browser storage. Each team member uses their own access.</p>
+    </section>
+  </main>
+
+  <div id="dashboard-view" hidden>
+    <header class="masthead">
+      <a class="wordmark" href="/" aria-label="Event CRM home">event<span>crm</span><i>.</i></a>
+      <div class="header-actions"><span id="access-label" class="access-label"></span><button id="logout" class="text-button" type="button">Sign out ↗</button></div>
+    </header>
+    <main class="workspace">
+      <section class="event-heading">
+        <div><span class="eyebrow">YOUR TEAM DESK</span><h1 id="event-name">Event</h1><p id="event-meta" class="muted"></p></div>
+        <div class="sync-state"><div id="live-pill" class="pill">Waiting for data</div><span id="updated-at" class="small muted"></span></div>
+      </section>
+      <div id="connection-error" class="notice" role="status" hidden></div>
+      <section class="metrics" aria-label="Current audience summary">
+        <div><span id="metric-matches" class="metric-number">0</span><span class="metric-label">IN THIS AUDIENCE</span></div>
+        <div><span id="metric-checked" class="metric-number">0</span><span class="metric-label">CHECKED IN</span></div>
+        <div><span id="metric-open" class="metric-number">0</span><span class="metric-label">READY TO ASSIGN</span></div>
+        <div class="metric-note"><span class="note-symbol" aria-hidden="true">↗</span><p>Find the context.<br>Make the connection.</p></div>
+      </section>
+      <section class="people-section" aria-label="Guest shortlist">
+        <div class="section-heading"><h2>The right conversations</h2><span class="small muted">Shared team assignments · personal filters</span></div>
+        <div id="audience-tabs" class="tabs" role="tablist" aria-label="Audience"></div>
+        <div class="filter-bar">
+          <label class="search-box"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search name, company or title" aria-label="Search guests"></label>
+          <label class="filter-label"><span>Team</span><select id="owner-filter" aria-label="Filter by owner"><option value="">Everyone</option><option value="__unassigned">Unassigned</option></select></label>
+          <label class="filter-label"><span>Attendance</span><select id="attendance-filter" aria-label="Filter attendance"><option value="">All signals</option><option value="checked">Checked in</option><option value="not_recorded">No check-in recorded</option><option value="unknown">Unknown</option></select></label>
+          <button id="clear-filters" class="text-button" type="button">Reset filters</button>
+        </div>
+        <div id="question-filters" class="question-filters"></div>
+        <div class="results-heading"><span id="result-count"></span><span id="ranking-note" class="small muted"></span></div>
+        <p class="attendance-note">Check-in is a provider signal. “No check-in recorded” and “Unknown” do not mean someone is absent.</p>
+        <div id="guest-list" class="guest-grid"></div>
+        <div id="empty-state" class="empty-state" hidden><span aria-hidden="true">◌</span><h3>No conversations in this view</h3><p>Try another audience or adjust your filters.</p></div>
+      </section>
+      <footer class="workspace-footer"><span>EVENT CRM / PRIVATE BY DEFAULT</span><p>Scores reflect your approved audience rules. They are heuristics, not purchase intent or predicted revenue.</p></footer>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
