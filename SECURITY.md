@@ -12,8 +12,12 @@ SQLite holds private aliases, exact identity bindings, approved professional fie
 
 Research fetches only public HTTPS websites with bounded same-site traversal and validates network destinations. Host email is used for domain discovery only. Do not score immigration, race, religion, health, sexuality, demographic traits, or other sensitive personal information. Relevance is commercial fit for voluntary event networking, not eligibility for employment, credit, housing or essential services.
 
+Portrait preparation is a separate operator command, not an attendance-poll side effect. A reviewed plan authorizes specific public image sources for the exact frozen cohort. It requires source/identity/cache attestations; these are not automated proof of likeness or legal permission. Image requests use vetted pinned public DNS, validated redirects, TLS, byte/time/dimension limits and no cookies or keys. Pillow decodes only JPEG/PNG/WebP and produces small metadata-free JPEGs. Keep this optional dependency patched. SQLite stores private evidence, revocations and cached bytes together; the authenticated photo route serves only the current alias/digest/identity match. The browser never hotlinks third-party portraits. Apply the same retention/access policy to images, review plans, reports and database backups as to the roster.
+
 Scoring is deterministic and explainable; evidence gaps remain visible. Attendance is an explicitly recorded boolean or unknown. Unknown is never converted to absence. Snapshot/source validation and monotonic revisions preserve the last good state on failures. Never weaken these checks to get a poll to pass.
 
 Security fixes target the current `0.1.x` release on the default branch. Review and update self-hosted installations before processing a new event; no automatic update service is included.
+
+SQLite connections enable secure deletion of freed database content. Revocation removes the served asset, but this is not a guarantee of forensic erasure from filesystem snapshots, journals or backups; those remain subject to the host's retention policy.
 
 Use the repository's **Security → Report a vulnerability** private reporting form when available. If it is unavailable, open a public issue asking only for a private reporting channel, without disclosing the vulnerability. Never attach exploit details, real credentials, attendee exports, database files or private URLs to a public issue.

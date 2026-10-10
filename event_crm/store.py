@@ -36,12 +36,17 @@ class Store:
                 CREATE TABLE IF NOT EXISTS audit (
                   id INTEGER PRIMARY KEY, at TEXT NOT NULL, actor TEXT NOT NULL,
                   alias TEXT NOT NULL, owner_id TEXT NOT NULL, status TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS portraits (
+                  source_id TEXT PRIMARY KEY, identity TEXT NOT NULL,
+                  revision INTEGER NOT NULL, metadata TEXT NOT NULL,
+                  digest TEXT NOT NULL, source_digest TEXT NOT NULL, asset BLOB);
             """)
             self.assert_binding(db)
 
     @contextmanager
     def connect(self):
         db = sqlite3.connect(self.path, timeout=10)
+        db.execute("PRAGMA secure_delete=ON")
         db.row_factory = sqlite3.Row
         try:
             with db:
@@ -110,7 +115,8 @@ class Store:
                     if not public_https(clean["linkedin_url"]):
                         clean["linkedin_url"] = ""
                     clean["answers"] = {q["id"]: guest.get("answers", {}).get(q["id"], "") for q in self.config["questions"]}
-                    clean["photo_url"] = guest.get("photo_url", "") if guest.get("photo_reviewed") is True and public_https(guest.get("photo_url")) else ""
+                    # A source URL is a discovery hint, never identity/asset proof.
+                    clean["photo_url"] = guest.get("photo_url", "")
                     clean["audiences"] = [a["id"] for a in self.config["audiences"] if score_guest(guest, a)["score"] >= a["min_score"]]
                     checked = guest.get("checked_in")
                     db.execute("INSERT INTO guests VALUES (?,?,?,?,?,?,?)", (guest["source_id"], secrets.token_urlsafe(18), identity(guest), canonical(clean), None if checked is None else int(checked), owner, "new"))
@@ -126,11 +132,17 @@ class Store:
             self.assert_binding(db)
             meta = dict(db.execute("SELECT key,value FROM meta"))
             guests = list(db.execute("SELECT * FROM guests"))
+            portraits = {row["source_id"]: row for row in db.execute(
+                "SELECT source_id,identity,digest FROM portraits WHERE asset IS NOT NULL")}
         audiences = []
         for audience in self.config["audiences"]:
             records = []
             for row in guests:
                 profile = json.loads(row["profile"])
+                portrait = portraits.get(row["source_id"])
+                profile["photo_url"] = (
+                    f"/api/photos/{row['alias']}/{portrait['digest']}"
+                    if portrait and portrait["identity"] == row["identity"] else "")
                 if audience["id"] not in profile.pop("audiences"):
                     continue
                 record = {**profile, "id": row["alias"], "checked_in": None if row["checked_in"] is None else bool(row["checked_in"]), "owner_id": row["owner_id"], "status": row["status"], **score_guest(profile, audience)}
@@ -138,6 +150,14 @@ class Store:
             records.sort(key=lambda record: rank_key(record, audience))
             audiences.append({"id": audience["id"], "label": audience["label"], "ranking": audience["ranking"], "records": records})
         return {"event": {k: self.config["event"][k] for k in ("name", "provider", "starts_at", "ends_at")}, "revision": int(meta.get("revision", "0")), "captured_at": meta.get("captured_at"), "team": self.config["team"], "questions": self.config["questions"], "audiences": audiences}
+
+    def photo(self, alias, digest):
+        with self.connect() as db:
+            self.assert_binding(db)
+            row = db.execute("""SELECT p.asset FROM portraits p JOIN guests g
+                ON p.source_id=g.source_id AND p.identity=g.identity
+                WHERE g.alias=? AND p.digest=?""", (alias, digest)).fetchone()
+            return bytes(row[0]) if row and row[0] is not None else None
 
     def assign(self, alias, owner_id, status, actor, *, expected=None):
         members = {m["id"] for m in self.config["team"]}

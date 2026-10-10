@@ -165,6 +165,38 @@ class VerificationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "redirects"):
             NoRedirect().redirect_request(None, None, 302, "", {}, "https://elsewhere.example")
 
+    def test_published_photos_are_verified_once_per_person_not_per_audience(self):
+        path = "/api/photos/" + "a"*24 + "/" + "f"*64
+        expected = {"revision": 1, "captured_at": "synthetic", "audiences": [
+            {"records": [{"photo_url": path}]}, {"records": [{"photo_url": path}]}]}
+        image = self.response("https://example.com" + path)
+        image.headers["Content-Type"] = "image/jpeg"
+        image.read.return_value = b"synthetic-reviewed-bytes"
+        opener = Mock()
+        opener.open.side_effect = [self.response("https://example.com/api/login"), self.response("https://example.com/api/dashboard", expected), image]
+        with patch("event_crm.verification.Store") as store:
+            store.return_value.dashboard.return_value = expected
+            store.return_value.photo.return_value = image.read.return_value
+            result = verify_https({}, "https://example.com/api/dashboard", opener=opener, token="synthetic-only")
+        self.assertEqual(result["photo_assets_verified"], 1)
+        self.assertFalse(result["browser_render_verified"])
+        self.assertEqual(opener.open.call_count, 3)
+
+    def test_wrong_or_redirected_image_bytes_fail_publication_verification(self):
+        path = "/api/photos/" + "a"*24 + "/" + "f"*64
+        expected = {"revision": 1, "captured_at": "synthetic", "audiences": [{"records": [{"photo_url": path}]}]}
+        for failure in ("redirect", "bytes", "mime", "cache"):
+            image = self.response("https://example.com" + (path if failure != "redirect" else "/wrong"), cache="public" if failure == "cache" else "no-store")
+            image.headers["Content-Type"] = "text/html" if failure == "mime" else "image/jpeg"
+            image.read.return_value = b"wrong" if failure == "bytes" else b"synthetic-reviewed-bytes"
+            opener = Mock()
+            opener.open.side_effect = [self.response("https://example.com/api/login"), self.response("https://example.com/api/dashboard", expected), image]
+            with patch("event_crm.verification.Store") as store:
+                store.return_value.dashboard.return_value = expected
+                store.return_value.photo.return_value = b"synthetic-reviewed-bytes"
+                with self.assertRaises(ValueError):
+                    verify_https({}, "https://example.com/api/dashboard", opener=opener, token="synthetic-only")
+
 
 if __name__ == "__main__":
     unittest.main()

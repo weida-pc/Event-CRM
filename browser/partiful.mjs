@@ -86,6 +86,7 @@ export function readVisibleRows(elements, {columns}) {
     const guestCell = cells[columns.guest];
     return [{
       name: guestCell.querySelector('img')?.alt || guestCell.innerText.split('\n').at(-1),
+      ...(columns.includePhotos ? {photo_url: guestCell.querySelector('img')?.currentSrc || guestCell.querySelector('img')?.src || ''} : {}),
       company: columns.company === null ? '' : cells[columns.company].innerText,
       title: columns.title === null ? '' : cells[columns.title].innerText,
       linkedin_url: columns.linkedin === null ? '' : cells[columns.linkedin].innerText,
@@ -202,7 +203,11 @@ async function scanView(adapter, config, columns, view, counts, maxPages) {
       }
       if (occupied.has(position.top) && occupied.get(position.top) !== key) throw new Error('Guest changed at a row position');
       const old = collected.get(key);
-      if (old && JSON.stringify(old) !== JSON.stringify(clean)) throw new Error('Guest data changed during scan');
+      const {photo_url: ignoredPhoto, ...oldAttendance} = old || {};
+      if (old && JSON.stringify(oldAttendance) !== JSON.stringify(clean)) throw new Error('Guest data changed during scan');
+      // Optional preflight-only hint. Images never participate in attendance
+      // identity/completeness checks and are never downloaded in this reader.
+      if (columns.includePhotos && typeof row.photo_url === 'string' && row.photo_url.length <= 2048) clean.photo_url = row.photo_url;
       positions.set(key, position); occupied.set(position.top, key); collected.set(key, clean);
     }
     state = validateState(await adapter.measure());
@@ -230,7 +235,7 @@ async function scanView(adapter, config, columns, view, counts, maxPages) {
 
 /** adapter: url/reload/prepare/readHeaders/readCounts/selectView/readRows/
  * measure/scroll/observe. All methods may be asynchronous. No cookies or APIs. */
-export async function captureAttendance(adapter, config, {maxPages = 400, onEvidence} = {}) {
+export async function captureAttendance(adapter, config, {maxPages = 400, onEvidence, includePhotos = false} = {}) {
   validateConfig(config);
   if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 10000) throw new Error('Invalid traversal page bound');
   const eventUrl = config.event.url;
@@ -240,6 +245,7 @@ export async function captureAttendance(adapter, config, {maxPages = 400, onEvid
   await adapter.prepare();
   if (!boundTabUrl(await adapter.url(), eventUrl)) throw new Error('Event navigation changed during reload');
   const headers = await adapter.readHeaders(), columns = partifulColumns(headers, config);
+  columns.includePhotos = includePhotos === true;
   const counts = await adapter.readCounts();
   if (Object.keys(counts).sort().join(',') !== 'approved,cant_go' ||
       Object.values(counts).some(n => !Number.isSafeInteger(n) || n < 0)) throw new Error('Both RSVP view counts are required');

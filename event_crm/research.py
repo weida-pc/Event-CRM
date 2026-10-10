@@ -322,23 +322,25 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
             raise
 
 
-def _fetch_sync(url: str, deadline: _Deadline) -> dict:
+def _fetch_sync(url: str, deadline: _Deadline, *, validator=_safe_url,
+                max_bytes=MAX_PAGE_BYTES, content_types=None, cross_site=False) -> dict:
     original_host = urlsplit(url).hostname
     current = url
     for redirects in range(MAX_REDIRECTS + 1):
         deadline.remaining()
-        current = _safe_url(current)
+        current = validator(current)
         parts = urlsplit(current)
-        if not _same_site(original_host, parts.hostname):
+        if not cross_site and not _same_site(original_host, parts.hostname):
             raise ResearchError("The website redirected to a different domain; supply the intended website explicitly.")
         addresses = _resolve_public_ips(parts.hostname)
         deadline.remaining()
         conn = _PinnedHTTPSConnection(parts.hostname, addresses[0], deadline)
         response = None
         try:
-            conn.request("GET", parts.path or "/", headers={
+            target = (parts.path or "/") + ("?" + parts.query if parts.query else "")
+            conn.request("GET", target, headers={
                 "User-Agent": "EventCRMResearch/1.0",
-                "Accept": "text/html, application/xhtml+xml;q=0.9, text/plain;q=0.8",
+                "Accept": ", ".join(content_types) if content_types else "text/html, application/xhtml+xml;q=0.9, text/plain;q=0.8",
                 "Accept-Encoding": "identity",
                 "Connection": "close",
             })
@@ -348,28 +350,28 @@ def _fetch_sync(url: str, deadline: _Deadline) -> dict:
                 location = response.getheader("Location")
                 if not location or redirects == MAX_REDIRECTS:
                     raise ResearchError("The website exceeded the redirect limit or returned an invalid redirect.")
-                current = _safe_url(urljoin(current, location))
-                if not _same_site(original_host, urlsplit(current).hostname):
+                current = validator(urljoin(current, location))
+                if not cross_site and not _same_site(original_host, urlsplit(current).hostname):
                     raise ResearchError("The website redirected to a different domain; supply the intended website explicitly.")
                 continue
             if response.status != 200:
                 raise ResearchError(f"The website returned HTTP {response.status}.")
             content_type = response.getheader("Content-Type", "")
-            if content_type.split(";", 1)[0].strip().lower() not in (
+            if content_type.split(";", 1)[0].strip().lower() not in (content_types or (
                 "text/html", "application/xhtml+xml", "text/plain"
-            ):
+            )):
                 raise ResearchError("The website did not return a supported text page.")
             if response.getheader("Content-Encoding", "identity").strip().lower() not in ("", "identity"):
                 raise ResearchError("The website returned compressed content despite a plain-text request.")
             body = bytearray()
-            while len(body) <= MAX_PAGE_BYTES:
+            while len(body) <= max_bytes:
                 deadline.remaining()
-                chunk = response.read1(min(16_384, MAX_PAGE_BYTES + 1 - len(body)))
+                chunk = response.read1(min(16_384, max_bytes + 1 - len(body)))
                 if not chunk:
                     break
                 body.extend(chunk)
-            return {"url": current, "body": bytes(body[:MAX_PAGE_BYTES]),
-                    "content_type": content_type, "truncated": len(body) > MAX_PAGE_BYTES}
+            return {"url": current, "body": bytes(body[:max_bytes]),
+                    "content_type": content_type, "truncated": len(body) > max_bytes}
         except (OSError, http.client.HTTPException) as exc:
             raise ResearchError("The public HTTPS page could not be fetched securely.") from exc
         finally:
@@ -379,7 +381,7 @@ def _fetch_sync(url: str, deadline: _Deadline) -> dict:
     raise ResearchError("The website exceeded the redirect limit.")
 
 
-def _fetch_public_page(url: str, *, timeout: float = PAGE_TIMEOUT_SECONDS) -> dict:
+def _fetch_public_page(url: str, *, timeout: float = PAGE_TIMEOUT_SECONDS, **options) -> dict:
     # A daemon worker also bounds blocking system DNS and slow header parsing.
     # On timeout all tracked sockets are shut down. A delayed DNS result cannot
     # open a socket because the cancelled deadline is checked before connecting.
@@ -388,7 +390,7 @@ def _fetch_public_page(url: str, *, timeout: float = PAGE_TIMEOUT_SECONDS) -> di
 
     def run():
         try:
-            result.put((True, _fetch_sync(url, deadline)))
+            result.put((True, _fetch_sync(url, deadline, **options)))
         except Exception as exc:
             result.put((False, exc))
 

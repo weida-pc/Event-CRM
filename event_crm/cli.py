@@ -125,9 +125,14 @@ def main(argv=None):
     p.add_argument("--email")
     p.add_argument("--website")
     p.add_argument("--output", required=True)
-    for command in ("doctor", "sync", "ingest", "import-csv", "serve", "monitor", "verify", "assign"):
+    for command in ("doctor", "sync", "ingest", "import-csv", "serve", "monitor", "verify", "assign", "photos"):
         p = sub.add_parser(command)
         p.add_argument("--config", required=True)
+        if command == "photos":
+            p.add_argument("--force", action="store_true", help="Explicitly replace an existing review plan; only with --plan")
+            group = p.add_mutually_exclusive_group()
+            group.add_argument("--plan", action="store_true", help="Generate a private, full-cohort photo review plan")
+            group.add_argument("--apply", action="store_true", help="Apply the reviewed private plan; fetch only approved image URLs")
         if command in {"sync", "ingest", "import-csv"}:
             p.add_argument("--initial", action="store_true")
         if command in {"ingest", "monitor"}:
@@ -162,7 +167,32 @@ def main(argv=None):
             result = {"output": str(Path(args.output).absolute()), "approval_required": True, "sources": len(packet["sources"])}
         else:
             config = load_config(args.config)
-            if args.command == "doctor":
+            if args.command == "photos":
+                from . import photos
+                store = Store(config)
+                plan_path = store.directory / "photo-plan.json"
+                report_path = store.directory / "photo-report.json"
+                if args.force and not args.plan:
+                    raise ValueError("--force is only for replacing a photo plan with --plan")
+                if args.plan:
+                    if plan_path.exists() and not args.force:
+                        raise ValueError("Photo plan exists; preserve pending reviews or explicitly replace with --plan --force")
+                    write_json(plan_path, photos.plan(store))
+                coverage = None
+                try:
+                    if args.apply:
+                        if plan_path.stat().st_size > 5 * 1024 * 1024:
+                            raise ValueError("Photo review plan is too large")
+                        from .server import _json_object, _invalid_constant
+                        coverage = photos.apply(store, json.loads(plan_path.read_text(encoding="utf-8-sig"), object_pairs_hook=_json_object, parse_constant=_invalid_constant))
+                finally:
+                    coverage = coverage if coverage is not None else photos.report(store)
+                    write_json(report_path, coverage)
+                result = {"tracked": coverage["tracked"], "stored": coverage["stored"],
+                          "unresolved": coverage["unresolved"], "counts": coverage["counts"],
+                          "render_verification": coverage["render_verification"],
+                          "report": str(report_path), "plan": str(plan_path)}
+            elif args.command == "doctor":
                 key_needed = config["event"]["provider"] == "luma"
                 result = {"configuration_valid": True, "provider": config["event"]["provider"], "luma_key_present": bool(os.environ.get("LUMA_API_KEY")) if key_needed else "not_required", "view_token_present": bool(os.environ.get("EVENT_CRM_VIEW_TOKEN")), "team_tokens_present": bool(os.environ.get("EVENT_CRM_TEAM_TOKENS")), "browser_required": config["event"]["provider"] == "partiful", "provider_access_tested": False}
             elif args.command == "serve":

@@ -144,16 +144,34 @@ function safeHTTPS(value, linkedin = false) {
   } catch { return null; }
 }
 
-function guestCard(guest) {
+function guestCard(guest, previousPhoto) {
   const card = element('article', 'guest-card'); card.dataset.id = guest.id;
   const main = element('div', 'card-main');
   const top = element('div', 'card-top');
   const initials = String(guest.name || '?').trim().split(/\s+/u).slice(0, 2).map((word) => [...word][0] || '').join('').toUpperCase();
   const avatar = element('div', 'avatar', initials);
-  const photo = safeHTTPS(guest.photo_url);
+  const photo = /^\/api\/photos\/[A-Za-z0-9_-]{24}\/[a-f0-9]{64}$/.test(guest.photo_url || '') ? guest.photo_url : null;
   if (photo) {
-    const image = element('img'); image.src = photo; image.alt = ''; image.loading = 'lazy'; image.referrerPolicy = 'no-referrer';
-    image.addEventListener('error', () => image.remove(), {once: true}); avatar.append(image);
+    card.dataset.photoUrl = photo;
+    const reusable = previousPhoto?.url === photo ? previousPhoto : null;
+    card.dataset.photo = reusable?.state || 'pending';
+    const image = reusable?.image || element('img');
+    if (!reusable) {
+      image.alt = ''; image.loading = 'lazy'; image.referrerPolicy = 'no-referrer';
+      image.addEventListener('load', () => {
+        const currentCard = image.closest('.guest-card');
+        if (currentCard) currentCard.dataset.photo = image.naturalWidth > 0 ? 'loaded' : 'failed_render';
+        updatePhotoSummary();
+      }, {once: true});
+      image.addEventListener('error', () => {
+        const currentCard = image.closest('.guest-card');
+        if (currentCard) currentCard.dataset.photo = 'failed_render';
+        if (image.parentElement) image.parentElement.title = 'Photo could not load';
+        image.remove(); updatePhotoSummary();
+      }, {once: true});
+      image.src = photo;
+    }
+    avatar.append(image);
   }
   top.append(avatar, element('span', `attendance-badge${guest.checked_in === true ? ' checked' : ''}`, guest.checked_in === true ? '● Checked in' : guest.checked_in === false ? 'No check-in recorded' : 'Attendance unknown'));
   main.append(top, element('h3', '', guest.name || 'Unnamed guest'), element('p', 'job-title', guest.title || 'Title not provided'), element('p', 'company', guest.company || 'Company not provided'));
@@ -198,6 +216,17 @@ function guestCard(guest) {
   return card;
 }
 
+function updatePhotoSummary() {
+  if (!state.data) return;
+  const unique = new Map(state.data.audiences.flatMap(a => a.records).map(g => [g.id, g]));
+  const stored = [...unique.values()].filter(g => /^\/api\/photos\//.test(g.photo_url || '')).length;
+  const cards = [...$('guest-list').children];
+  const loaded = cards.filter(c => c.dataset.photo === 'loaded').length;
+  const failed = cards.filter(c => c.dataset.photo === 'failed_render').length;
+  const expected = cards.filter(c => c.dataset.photo).length;
+  $('photo-summary').textContent = `Photos stored: ${stored}/${unique.size} people · Visible loaded: ${loaded}/${expected} · ${expected - loaded - failed} pending${failed ? ` · ${failed} failed to load` : ''}`;
+}
+
 function renderGuests() {
   const audience = selectedAudience();
   const records = audience?.records || [];
@@ -215,9 +244,14 @@ function renderGuests() {
     return true;
   }).sort((a, b) => rank(audience, a, b));
   const openDetails = new Set([...$('guest-list').querySelectorAll('details[open]')].map((details) => details.closest('.guest-card').dataset.id));
-  const cards = filtered.map(guestCard);
+  const previousPhotos = new Map([...$('guest-list').children].flatMap(card => {
+    const image = card.querySelector('img');
+    return image ? [[card.dataset.id, {image, url: card.dataset.photoUrl, state: card.dataset.photo}]] : [];
+  }));
+  const cards = filtered.map(guest => guestCard(guest, previousPhotos.get(guest.id)));
   for (const card of cards) if (openDetails.has(card.dataset.id)) { const details = card.querySelector('details'); if (details) details.open = true; }
   $('guest-list').replaceChildren(...cards);
+  updatePhotoSummary();
   $('result-count').textContent = `${filtered.length} ${filtered.length === 1 ? 'person' : 'people'}${filtered.length !== records.length ? ` of ${records.length}` : ''}`;
   $('ranking-note').textContent = audience?.ranking === 'attendance_first' ? 'Priority → check-in → match score' : 'Priority → match score → check-in';
   $('empty-state').hidden = filtered.length !== 0;

@@ -17,7 +17,7 @@ Show the host this table and collect only the inputs for their chosen mode. A re
 | Team dashboard | Named authorized team members and approval to share this event's lead data with them | Strong `EVENT_CRM_VIEW_TOKEN` for read-only access and/or `EVENT_CRM_TEAM_TOKENS` for named writers |
 | Hosted team access | Host approves deployment destination, intended audience, retention, domain, and operating cost | Their server/container account, TLS domain/reverse proxy, and secret delivery mechanism. Never reuse another organization's server or keys |
 | AI agent | User's configured Codex, Claude Code or equivalent account and permitted local shell/browser tools | Existing agent access; Event CRM itself does **not** require an OpenAI/Anthropic API key |
-| Optional portraits/research | Approved public professional sources, exact identity match, permission to show the image | No enrichment provider is bundled. Any separate paid integration requires its own credentials and explicit budget approval |
+| Portrait preparation | Permission to research professional profiles and cache/share portraits with this team; exact identity/source review | Install `.[photos]` (Pillow). No enrichment key is required by the app. Separately used paid services need the host's credentials and explicit budget approval |
 
 [Luma's official key requirements](https://docs.luma.com/reference/getting-started-with-your-api) describe calendar-scoped keys and `x-luma-api-key`. Never paste the key into chat, a config JSON, URL, Git, screenshots, or a public dashboard. Put it in the poller's process environment or managed secret store. Do not retrieve unrelated calendars or create webhooks/check-ins.
 
@@ -32,6 +32,7 @@ Before proceeding, ask in one batch for:
 3. Team member IDs/display names; who may read and who may update assignments. All configured members share the instance; audience tabs are filters, **not** access barriers.
 4. Exact professional signup-question labels the host authorizes for scoring/filtering. Exclude contact, immigration, medical, demographic and other sensitive questions. Do not infer sensitive traits.
 5. ICP approval, data-sharing authorization, intended hosting destination, retention deadline, and permission for a bounded monitor. No emailing, attendee approval, or outreach is included.
+6. Portrait research/cache permission, allowed sources, reviewer and any paid-provider budget. If declined, account for those guests as blocked rather than silently skipping them.
 
 If permission/key/session is missing, report exactly what is missing and continue only with the synthetic demo. Do not claim real-time sync until a real authorized preflight has passed.
 
@@ -43,6 +44,7 @@ Clone this repository into its own directory. The repository URL is the origin o
 git clone <repository-url> event-crm
 cd event-crm
 python --version
+python -m pip install ".[photos]"
 python -m unittest discover -s tests -v
 python -m event_crm demo --directory runtime/demo
 python -m event_crm verify --config runtime/demo/event.json
@@ -51,6 +53,8 @@ python -m event_crm verify --config runtime/demo/event.json
 Use Python 3.11 or later (`python3` on systems where that is the installed name). Python runs directly from the clone with the standard library; installation is optional. Node.js 22+ is needed only for the browser reader's offline tests/tool integration, not the core Python app. Run `node --test browser/partiful.test.mjs` to verify the browser reader; with Node installed, the Python suite also exercises the cross-language capture/import path. Repository access does not grant access to an event host's accounts or guest data.
 
 Optional CI setup uses `examples/ci-tests.yml`. Installing it into `.github/workflows/tests.yml` needs repository-owner approval and GitHub workflow permission; it is not required to run the app. Do not broaden account permissions solely to enable optional CI.
+
+`node --test tests/photo_ui.test.mjs` runs the shipped photo UI code in an offline DOM harness, including load failures. It is not a substitute for inspecting the authenticated rendered dashboard on the host's actual deployment.
 
 `runtime/` is ignored by Git. Keep actual configs, snapshots, research packets and databases there or in a separate access-controlled directory. Do not upload raw event data to the source repository. The shipped demo contains only fictional people.
 
@@ -195,7 +199,54 @@ In the server's environment, set `EVENT_CRM_PUBLIC_ORIGIN=https://crm.your-domai
 
 Check both a read-only login and a named team login. Read-only access must not change work. Assign a synthetic/demo lead from one browser and verify another sees it. If a teammate changes the same lead after your last refresh, your stale edit is rejected and the dashboard refreshes; review their update before trying again. Work statuses are `new`, `assigned`, `contacted`, `follow_up`, `done`. These are internal coordination flags; they do not send a message or update provider attendance. Do not mark a real lead contacted without evidence. The local `assign` CLI is an operator override that explicitly sets both fields, so inspect the current work state before using it.
 
-Portraits are optional. A normalized record can contain `photo_url` only with `photo_reviewed:true` after exact identity/source review. Missing portraits show initials and never exclude a lead. External images contact their image host; use only approved public URLs or your own authorized image host. Name-only matches and reused photos across different people are not sufficient evidence.
+### Portrait preparation: required accounting, never invented matches
+
+Do this separately from monitoring for every person in the **existing agreed cohort**, deduplicated across audiences. Missing photos never exclude a lead. Finding a usable portrait cannot be guaranteed; lookup and an honest unresolved report are required. Do not count initials/default avatars or pending research as success.
+
+```sh
+python -m event_crm photos --config runtime/my-event/event.json --plan
+```
+
+This writes `photo-plan.json` and the current `photo-report.json` inside the private state directory (exact paths appear in the output). Edit the single plan in place; preserve its binding, IDs, identity fingerprints and revisions. Never put it in Git. Existing reviewed cached portraits default to `keep`; unresolved guests to `search`, with prior outcomes/reasons/source checks preserved. An existing plan is protected against overwrite. To regenerate, first preserve any unapplied candidate reviews, then explicitly use `--plan --force` and restore still-valid pending reviews by exact identity. This matters after a partial apply or concurrent-review conflict. Do not create competing backup plans. Legacy `photo_reviewed:true` URLs are discovery hints, not sufficient proof, and are not displayed until reviewed and cached.
+
+The authorized agent follows this order for each unresolved guest:
+
+1. Inspect the exact event's guest row for a non-default avatar, or keep its existing identity-bound reviewed cache. Luma's [official guest schema](https://public-api.luma.com/openapi.json) does not expose a guest avatar: inspect the permitted host UI, not private APIs/cookies. For Partiful preflight, `captureAttendance(adapter, config, {includePhotos:true})` includes visible image-URL hints; ordinary attendance scans leave it off. If already initialized, add the observed URL directly to the plan; do not reinitialize the roster.
+2. Inspect the supplied professional profile and corroborate the name **and specific company/context**. A registration URL is not proof. If wrong, find a corroborated corrected profile and record it as the photo source, without changing the frozen attendance identity. No same-name search thumbnails or generic-role matches. When company is missing, independent professional/contextual corroboration is required and must be described.
+3. Inspect an official company team, personal professional or event speaker page. Select the reviewed portrait, not a logo or automatically chosen Open Graph image.
+4. Only with separate permission/budget, check a paid provider's actual availability/credits and review its result by the same rules. This app makes no paid API calls and stores no provider keys. An empty/blocked result is not proof that no portrait exists: continue other permitted sources. Never bypass login, paywalls or challenges.
+
+Each person can have at most four reviewed `candidates`; the downloader tries them in this fixed source order. The first safe, non-rejected, non-duplicate asset wins. Candidate shape (replace synthetic values with observed evidence):
+
+```json
+{
+  "kind": "professional_profile",
+  "page_url": "https://www.linkedin.com/in/synthetic-example",
+  "image_url": "https://images.example.com/reviewed-person.jpg",
+  "observed_name": "Avery Example",
+  "observed_company": "Sample Analytics",
+  "identity_basis": "Name and employer corroborated against the exact event row and official team page.",
+  "reviewer": "authorized-operator",
+  "reviewed_at": "REPLACE_WITH_CURRENT_ISO_TIMESTAMP_WITH_TIMEZONE",
+  "non_default": true,
+  "cache_authorized": true
+}
+```
+
+Kinds are `event_avatar`, `professional_profile`, `official_page`, `paid_result` (also needs `paid_authorized:true`). Reviews must be within seven days when applied. For `event_avatar`, `page_url` is the exact canonical event binding, not a claim that the public event page exposes the image; describe the actual host-management page/row inspected in `identity_basis`. An event avatar identifies that event account, not independently verified real-world likeness. The code validates binding/review structure, not the truth of an attestation; the agent must inspect the source. No face matching or generated replacement portraits. Signed profile-image URLs are recorded as a `blocked` source check, not supplied as candidates; continue to another permitted source without bypassing access restrictions.
+
+For unsuccessful sources, add `source_checks` entries shaped `{"kind":"official_page","result":"not_found","reason":"Reviewed permitted team and speaker pages; no portrait available."}`. Results: `not_found`, `blocked`, `ambiguous`, `not_authorized`. Set each unresolved person's `outcome` to `pending`, `not_found`, `blocked` or `ambiguous`, with a concrete `reason`. `not_found` requires accounting for all three unpaid source types. Do not mark pending research finished to reach a coverage target.
+
+```sh
+python -m event_crm photos --config runtime/my-event/event.json --apply
+python -m event_crm photos --config runtime/my-event/event.json
+```
+
+Apply validates the complete plan before fetching. Public HTTPS fetching vets/pins DNS and bounds redirects, time and bytes; signed/credential URLs are rejected, with only common resizing query parameters allowed. JPEG/PNG/WebP must fully decode and meet dimension limits, then are re-encoded as metadata-free thumbnails. Private evidence and assets commit together in SQLite with revision checks. Failures keep a previous good portrait and appear as failed attempts. Generate a fresh `--plan` before another apply; concurrent changes cannot be silently overwritten.
+
+For a known wrong portrait, generate a fresh plan, set that person's `action` to `reject`, give a reason and apply. It removes the cached image and persists rejected source/content hashes (including original response bytes and sizing-independent source URLs). Rejects are applied before searches, so correcting another person's assignment is not dependent on alias order. Generate another plan to review a different correct source. Duplicate source bytes or normalized thumbnail bytes across distinct tracked people are blocked for review; this is not perceptual matching and cannot recognize every re-encoded/cropped copy. One tracked person shares one image across audience tabs. Photo commands never change attendance, cohort, answers, scoring or team work.
+
+The canonical report is derived from current database state, with the unique denominator, stored count, unresolved list, attempts and private provenance. `stored` is **not** `rendered`. `verify --url` checks the exact authenticated HTTPS dashboard and each unique cached image's bytes/privacy headers against local state; it reports `browser_render_verified:false`. Open the authenticated dashboard, clear filters, inspect each audience and scroll its cards: the summary distinguishes stored coverage from visible loaded images and counts render failures. Verify the actual hosted origin before claiming deployment verification. Keep evidence private, not boilerplate on guest cards. Never run photo searches in minute-by-minute attendance polling.
 
 ## 7. Start bounded monitoring
 

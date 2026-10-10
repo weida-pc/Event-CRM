@@ -19,6 +19,7 @@ The guide is the single onboarding entry point. `AGENTS.md` and `CLAUDE.md` rout
 - Adds filter buttons for configured signup questions with available answers. Each audience can have its own rules and cutoff.
 - Reads Luma's official API or an authorized Partiful host browser; never treats RSVP as attendance. Incomplete scans preserve the last good state.
 - Gives every lead a stable owner and shared work status. Team changes persist in SQLite independently of attendance updates.
+- Accounts for portraits across the agreed cohort, with private identity evidence, authenticated image caching, visible rendering coverage and explicit unresolved guests.
 - Serves an authenticated, mobile-friendly dashboard with read-only and per-member team access. Real guest data is private by default.
 
 ## Quick synthetic demo
@@ -51,12 +52,16 @@ One event configuration uses one private state directory. Run separate instances
 ## Verification
 
 ```sh
+python -m pip install ".[photos]"
 python -m unittest discover -s tests -v
 node --test browser/partiful.test.mjs
+node --test tests/photo_ui.test.mjs
 python -m compileall -q event_crm
 python tools/privacy_check.py
 ```
 
 Tests use synthetic data and fake provider responses. Live provider access must be preflighted with the host's own authorization and account. See [SECURITY.md](SECURITY.md) for the trust model.
+
+Portrait preparation and image-validation tests use the optional Pillow dependency (`.[photos]`); the core demo and attendance service remain standard-library-only. Discovery/identity review is agent-assisted, not automatic face matching. The application does not call paid enrichment services.
 
 [examples/ci-tests.yml](examples/ci-tests.yml) is an optional Windows/Linux GitHub Actions template. A repository owner can install it at `.github/workflows/tests.yml` with credentials authorized to manage workflows. It is not active by default; the commands above run all checks locally.

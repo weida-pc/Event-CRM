@@ -42,7 +42,7 @@ The provider does not promise an atomic view across an entire scroll. The reader
 
 ## Custom facade
 
-`captureAttendance(adapter, config, {maxPages: 400, onEvidence})` calls these methods:
+`captureAttendance(adapter, config, {maxPages: 400, onEvidence, includePhotos: false})` calls these methods:
 
 | Method | Result or operation |
 | --- | --- |
@@ -58,6 +58,8 @@ The provider does not promise an atomic view across an entire scroll. The reader
 | `observe()` | Native screenshot/render observation |
 
 An optional `onEvidence` receives aggregate geometry only. Neither it nor error messages contain guest answers. The reader is one finite scan. A host-authorized agent may repeat scans within the configured monitoring window and ingest each result; the Python file watcher by itself does not drive a browser. Keep polling at or above the configured interval and stop at the configured end. Provider check-in mutations remain outside this adapter.
+
+`includePhotos:true` is a separate preflight option: it reads only the visible guest-cell image URL as an untrusted portrait hint. Default attendance scans do not inspect image URLs. Hints are excluded from overlap/attendance comparisons, never downloaded by the reader and never approve identity. Initial ingestion can retain a safe unsigned hint for the private photo plan; later attendance ingestion does not update portraits. Follow the portrait workflow in `START_HERE.md` for identity review, fallback discovery and private caching.
 
 Official Partiful references: [guest check-in](https://help.partiful.com/en-us/articles/15525408-how-can-i-check-in-guests-for-my-event), [CSV export](https://help.partiful.com/en-us/articles/15525376-how-can-i-export-my-guest-list), [display-name limitations](https://help.partiful.com/en-us/articles/15525419-can-i-download-the-names-of-my-guests). These document host capabilities; they do not specify DOM selectors or a public guest API.
 

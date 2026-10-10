@@ -183,7 +183,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; "
-                         "img-src 'self' https:; connect-src 'self'; font-src 'self'; base-uri 'none'; "
+                         "img-src 'self'; connect-src 'self'; font-src 'self'; base-uri 'none'; "
                          "frame-ancestors 'none'; form-action 'self'; object-src 'none'")
         if self.server.access.proxy:
             self.send_header("Strict-Transport-Security", "max-age=31536000")
@@ -268,13 +268,21 @@ class Handler(BaseHTTPRequestHandler):
             filename, content_type = ASSETS[path]
             self._reply(200, (Path(__file__).parent / "static" / filename).read_bytes(), content_type)
             return
-        if path not in ("/api/dashboard", "/api/status"):
+        photo_match = re.fullmatch(r"/api/photos/([A-Za-z0-9_-]{24})/([a-f0-9]{64})", path)
+        if path not in ("/api/dashboard", "/api/status") and not photo_match:
             self._error(404, "Route not found")
             return
         _, session = self._session()
         if session is None:
             return
         try:
+            if photo_match:
+                asset = self.server.store.photo(*photo_match.groups())
+                if asset is None:
+                    self._error(404, "Photo unavailable")
+                else:
+                    self._reply(200, asset, "image/jpeg")
+                return
             with self.server.lock:
                 data = self.server.store.dashboard()
             runtime = self._runtime(data, session)

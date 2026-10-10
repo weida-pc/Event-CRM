@@ -7,6 +7,7 @@ Read [START_HERE.md](START_HERE.md) for the complete installation and host onboa
 - Require host authorization, exact event binding, explicit professional-question mappings, approved ICP evidence, team members, and a bounded monitoring window before live operation.
 - Attendance requires an explicit provider check-in signal. Missing data is unknown, never absence. Complete source validation and exact identities precede atomic updates. Preserve last good data on failure.
 - Keep assignment and attendance state independent of scoring and rerenders. Provider snapshots cannot overwrite team work.
+- Account for portraits for every person in the agreed frozen cohort using the separate `photos` plan/review/report workflow. A supplied profile URL or empty API result is not a final identity/photo conclusion. Keep explicit unresolved outcomes, private evidence and revocations; never claim stored assets prove browser rendering. No portrait enrichment inside attendance polling.
 - No credentials in URLs or committed files. Public code does not imply public guest data; runtime is private by default.
-- Test using synthetic fixtures only: `python -m unittest discover -s tests -v` and `node --test browser/partiful.test.mjs`. Never use real event credentials during tests.
+- Test using synthetic fixtures only: install `.[photos]`, then run `python -m unittest discover -s tests -v` and `node --test browser/partiful.test.mjs tests/photo_ui.test.mjs`. Never use real event credentials during tests.
 - Code edits use apply_patch. Preserve unrelated user changes. Do not deploy or start monitoring a real event as a side effect of developing this project.

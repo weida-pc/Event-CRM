@@ -193,10 +193,14 @@ def validate_snapshot(snapshot, config):
         if event["provider"] == "partiful" and normalized["source_id"] != partiful_identity(
                 event["url"], normalized["name"], normalized["linkedin_url"], normalized["company"]):
             raise ValueError("Partiful source identity does not match its exact professional identity")
-        if guest.get("photo_url"):
-            if guest.get("photo_reviewed") is not True:
-                raise ValueError("Photos require explicit review")
-            normalized.update(photo_url=_safe_url(guest["photo_url"]), photo_reviewed=True)
+        # Portrait hints cannot make an otherwise valid attendance scan fail.
+        # Neither a URL nor the legacy review boolean approves a portrait.
+        try:
+            if guest.get("photo_url"):
+                from .photo_urls import image_url
+                normalized["photo_url"] = image_url(guest["photo_url"])
+        except (ValueError, TypeError):
+            pass
         clean.append(normalized)
     observed = Counter(g["approval_status"] for g in clean)
     if sum(counts.values()) != len(clean) or any(counts.get(k) != v for k, v in observed.items()):

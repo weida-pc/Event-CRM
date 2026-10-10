@@ -99,6 +99,28 @@ test('counts require exact stable visible badges', () => {
   assert.throws(() => readCountButtons([{innerText: '4 Approved'}], {approved: 'Approved', cant_go: "Can't Go"}));
 });
 
+test('portrait hints are opt-in and never change attendance identity or scan consistency', async () => {
+  const adapter = () => fake({mutate(rows, {reads}) { rows.forEach(r => { r.photo_url = `https://images.example.com/avatar-${reads}.png`; }); }});
+  const plain = await captureAttendance(adapter(), config());
+  const withPhotos = await captureAttendance(adapter(), config(), {includePhotos: true});
+  assert.ok(plain.guests.every(g => !('photo_url' in g)));
+  assert.ok(withPhotos.guests.every(g => g.photo_url.startsWith('https://images.example.com/')));
+  assert.deepEqual(withPhotos.guests.map(({photo_url, ...g}) => g), plain.guests);
+});
+
+test('DOM does not inspect image URLs during attendance-only capture', () => {
+  const columns = partifulColumns(headers, config());
+  let reads = 0;
+  const img = {alt: 'Synthetic Person', get currentSrc() { reads++; return 'https://images.example.com/a.png'; }};
+  const cells = headers.map((_, index) => ({innerText: ['','Synthetic Person','','🤘 Approved','Check in','','Example Organization','Engineer','','Design'][index],
+    querySelector: () => index === 1 ? img : null}));
+  const elements = [{querySelectorAll: () => cells, style: {transform: 'translateY(0px)', height: '50px'}}];
+  readVisibleRows(elements, {columns});
+  assert.equal(reads, 0);
+  assert.equal(readVisibleRows(elements, {columns: {...columns, includePhotos: true}})[0].photo_url, 'https://images.example.com/a.png');
+  assert.equal(reads, 1);
+});
+
 test('contiguous geometry rejects gaps, mismatches, inconsistent height', () => {
   const extent = {height: 180, headerHeight: 30};
   const positions = [{top: 0, height: 50}, {top: 50, height: 50}, {top: 100, height: 50}];

@@ -1,6 +1,7 @@
 """Compare an explicitly authorized HTTPS dashboard to local authoritative state."""
 import json
 import os
+import re
 from http.cookiejar import CookieJar
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -40,10 +41,26 @@ def verify_https(config, url, *, opener=None, token=None):
         if not isinstance(actual, dict):
             raise ValueError("Unexpected dashboard payload")
         actual.pop("runtime", None)
-        expected = Store(config).dashboard()
+        store = Store(config)
+        expected = store.dashboard()
         if actual != expected:
             raise ValueError("Exact HTTPS dashboard differs from the local authoritative state")
-        return {"https_verified": True, "revision": expected["revision"], "captured_at": expected["captured_at"]}
+        paths = {g["photo_url"] for a in expected.get("audiences", []) for g in a["records"] if g.get("photo_url")}
+        for path in sorted(paths):
+            match = re.fullmatch(r"/api/photos/([A-Za-z0-9_-]{24})/([a-f0-9]{64})", path)
+            if not match:
+                raise ValueError("Unexpected portrait route; no external image request made")
+            local = store.photo(*match.groups())
+            request = Request(origin + path, headers={"Cache-Control": "no-cache"})
+            with client.open(request, timeout=15) as response:
+                if (response.geturl() != request.full_url or response.status != 200
+                        or response.headers.get("Content-Type", "").split(";", 1)[0] != "image/jpeg"
+                        or "no-store" not in response.headers.get("Cache-Control", "")):
+                    raise ValueError("Exact HTTPS photo endpoint or privacy policy failed verification")
+                if local is None or response.read(512_001) != local:
+                    raise ValueError("Published photo differs from the local reviewed asset")
+        return {"https_verified": True, "revision": expected["revision"], "captured_at": expected["captured_at"],
+                "photo_assets_verified": len(paths), "browser_render_verified": False}
     except HTTPError as exc:
         raise ValueError(f"HTTPS verification failed with HTTP {exc.code}") from None
     except URLError:
