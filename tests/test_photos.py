@@ -160,6 +160,130 @@ class PhotoTests(unittest.TestCase):
         self.assertEqual([c.args[0].split("/")[-1] for c in self.fetcher.call_args_list], ["event.png", "profile.png"])
         self.assertEqual(report["stored"], 1)
 
+    def test_discovery_is_offline_bounded_and_only_uses_professional_identity(self):
+        from urllib.parse import parse_qs, urlsplit
+        profile = {"name": "Example & Person", "company": "Specific Business",
+                   "linkedin_url": "https://www.linkedin.com/in/example-person/",
+                   "email": "never-send@private.invalid", "answers": {"private": "never-send"}}
+        with patch("event_crm.photos.download") as fetch:
+            work = photos.discovery(profile, "https://luma.com/example")
+        fetch.assert_not_called()
+        self.assertEqual(work["unchecked_sources"], list(photos.UNPAID_CHECKS))
+        self.assertEqual(parse_qs(urlsplit(work["image_search_url"]).query)["q"],
+                         ['"Example & Person" "Specific Business"'])
+        self.assertNotIn("never-send", canonical(work))
+        self.assertNotIn("paid_result", work["unchecked_sources"])
+
+    def test_discovery_plan_and_report_do_not_change_existing_state(self):
+        self.apply_one()
+        member = self.config["team"][0]["id"]
+        self.store.assign(self.person["id"], member, "follow_up", member)
+        with self.store.connect() as db:
+            before = {table: [tuple(r) for r in db.execute("SELECT * FROM " + table)]
+                      for table in ("guests", "meta", "audit", "portraits")}
+        dashboard = self.store.dashboard()
+        with patch("event_crm.photos.download") as fetch:
+            photos.plan(self.store)
+            photos.report(self.store)
+        fetch.assert_not_called()
+        with self.store.connect() as db:
+            after = {table: [tuple(r) for r in db.execute("SELECT * FROM " + table)]
+                     for table in before}
+        self.assertEqual(before, after)
+        self.assertEqual(dashboard, self.store.dashboard())
+
+    def test_legacy_pending_plan_without_discovery_remains_usable(self):
+        for person in self.packet["people"]:
+            person.pop("discovery")
+        self.person["candidates"] = [self.candidate()]
+        self.assertEqual(photos.apply(self.store, self.packet, fetcher=self.fetcher)["stored"], 1)
+
+    def test_provider_permission_or_credit_failure_preserves_existing_functions(self):
+        self.apply_one()
+        member = self.config["team"][0]["id"]
+        self.store.assign(self.person["id"], member, "follow_up", member)
+        dashboard, asset = self.store.dashboard(), self.asset()
+        for error in (PermissionError("Billing endpoint permission denied"),
+                      ValueError("Enrichment budget could not be verified")):
+            with self.subTest(error=type(error).__name__):
+                packet, person = self.fresh_person()
+                person["action"] = "search"
+                person["candidates"] = [self.candidate(path="replacement.png")]
+                self.fetcher.side_effect = error
+                result = photos.apply(self.store, packet, fetcher=self.fetcher)
+                row = next(p for p in result["people"] if p["id"] == person["id"])
+                self.assertEqual((row["state"], row["last_attempt"]), ("stored", "blocked"))
+                self.assertEqual(dashboard, self.store.dashboard())
+                self.assertEqual(asset, self.asset())
+
+    def test_empty_provider_result_requires_more_research_then_official_photo_is_cached(self):
+        self.person.update(outcome="blocked", reason="Provider returned an empty photo field",
+                           source_checks=[{"kind": "professional_profile", "result": "blocked",
+                                           "reason": "No image in provider response; availability elsewhere unknown"}])
+        first = photos.apply(self.store, self.packet, fetcher=self.fetcher)
+        self.fetcher.assert_not_called()
+        row = next(p for p in first["people"] if p["id"] == self.person["id"])
+        self.assertIn("official_page", row["unchecked_sources"])
+        self.assertIn("image_search", row["unchecked_sources"])
+        packet, person = self.fresh_person()
+        person["candidates"] = [self.candidate(kind="official_page")]
+        result = photos.apply(self.store, packet, fetcher=self.fetcher)
+        self.assertEqual(result["stored"], 1)
+        good = self.asset()
+        packet, person = self.fresh_person()
+        self.assertEqual(person["action"], "keep")
+        self.assertIsNone(person["discovery"])
+        self.fetcher.reset_mock()
+        photos.apply(self.store, packet, fetcher=self.fetcher)
+        self.fetcher.assert_not_called()
+        self.assertEqual(self.asset(), good)
+
+    def test_legacy_not_found_without_search_is_pending_not_completed(self):
+        self.person.update(outcome="blocked", reason="Synthetic legacy review",
+                           source_checks=[{"kind": k, "result": "not_found", "reason": "Source reviewed"}
+                                          for k in photos.KINDS[:3]])
+        photos.apply(self.store, self.packet, fetcher=self.fetcher)
+        with self.store.connect() as db:
+            row = db.execute("SELECT source_id,metadata FROM portraits").fetchone()
+            metadata = json.loads(row["metadata"])
+            metadata["outcome"] = "not_found"
+            db.execute("UPDATE portraits SET metadata=? WHERE source_id=?", (canonical(metadata), row["source_id"]))
+        packet, person = self.fresh_person()
+        self.assertEqual(person["outcome"], "pending")
+        self.assertEqual(person["discovery"]["unchecked_sources"], ["image_search"])
+        result = photos.apply(self.store, packet, fetcher=self.fetcher)
+        row = next(p for p in result["people"] if p["id"] == person["id"])
+        self.assertEqual(row["state"], "pending")
+
+    def test_search_thumbnail_and_search_as_identity_source_are_rejected(self):
+        for url in ("https://encrypted-tbn0.gstatic.com/images/a.jpg", "https://tse1.mm.bing.net/a.jpg",
+                    "https://external-content.duckduckgo.com/a.jpg"):
+            self.person["candidates"] = [{**self.candidate(), "image_url": url}]
+            with self.assertRaisesRegex(ValueError, "search thumbnail"):
+                photos.apply(self.store, self.packet, fetcher=self.fetcher)
+        self.person["candidates"] = [self.candidate(kind="image_search")]
+        with self.assertRaises(ValueError):
+            photos.apply(self.store, self.packet, fetcher=self.fetcher)
+        self.fetcher.assert_not_called()
+
+    def test_redirect_to_search_thumbnail_is_blocked(self):
+        self.person["candidates"] = [self.candidate()]
+        self.fetcher.return_value = {**synthetic_image(), "url": "https://tse1.mm.bing.net/a.jpg"}
+        result = photos.apply(self.store, self.packet, fetcher=self.fetcher)
+        self.assertEqual(result["stored"], 0)
+        self.assertEqual(result["counts"]["blocked"], 1)
+
+    def test_duplicate_source_checks_and_blocked_as_not_found_are_rejected(self):
+        self.person["source_checks"] = [{"kind": "image_search", "result": "not_found", "reason": "Reviewed"}] * 2
+        with self.assertRaisesRegex(ValueError, "duplicate source checks"):
+            photos.apply(self.store, self.packet, fetcher=self.fetcher)
+        self.person.update(outcome="not_found", reason="All sources attempted",
+                           source_checks=[{"kind": k, "result": "blocked", "reason": "Unavailable"}
+                                          for k in photos.UNPAID_CHECKS])
+        with self.assertRaisesRegex(ValueError, "provider failure is not absence"):
+            photos.apply(self.store, self.packet, fetcher=self.fetcher)
+        self.fetcher.assert_not_called()
+
     def test_transient_failure_preserves_last_good_and_reports_attempt(self):
         self.apply_one()
         good = self.asset()
@@ -236,18 +360,21 @@ class PhotoTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             photos.apply(self.store, self.packet, fetcher=self.fetcher)
         self.person["source_checks"] = [{"kind": kind, "result": "not_found", "reason": "Synthetic source inspected"} for kind in photos.KINDS[:3]]
+        with self.assertRaisesRegex(ValueError, "web/image-search"):
+            photos.apply(self.store, self.packet, fetcher=self.fetcher)
+        self.person["source_checks"].append({"kind": "image_search", "result": "not_found", "reason": "Original pages reviewed from search results"})
         self.assertEqual(photos.apply(self.store, self.packet, fetcher=self.fetcher)["counts"]["not_found"], 1)
 
     def test_round_two_preserves_unresolved_accounting_and_noop_revisions(self):
         for person, outcome in zip(self.packet["people"], ("not_found", "blocked", "ambiguous", "rejected")):
             person.update(outcome=outcome, reason="Synthetic source reviewed and accounted for",
-                          source_checks=[{"kind": kind, "result": "not_found", "reason": "Synthetic source inspected"} for kind in photos.KINDS[:3]])
+                          source_checks=[{"kind": kind, "result": "not_found", "reason": "Synthetic source inspected"} for kind in photos.UNPAID_CHECKS])
         photos.apply(self.store, self.packet, fetcher=self.fetcher)
         with self.store.connect() as db:
             before = {r["source_id"]: tuple(r) for r in db.execute("SELECT * FROM portraits")}
         packet = photos.plan(self.store)
         self.assertEqual(packet["people"][0]["outcome"], "not_found")
-        self.assertEqual(len(packet["people"][0]["source_checks"]), 3)
+        self.assertEqual(len(packet["people"][0]["source_checks"]), 4)
         person = packet["people"][-1]
         person["candidates"] = [self.candidate(person)]
         photos.apply(self.store, packet, fetcher=self.fetcher)

@@ -19,7 +19,7 @@ The guide is the single onboarding entry point. `AGENTS.md` and `CLAUDE.md` rout
 - Adds filter buttons for configured signup questions with available answers. Each audience can have its own rules and cutoff.
 - Reads Luma's official API or an authorized Partiful host browser; never treats RSVP as attendance. Incomplete scans preserve the last good state.
 - Gives every lead a stable owner and shared work status. Team changes persist in SQLite independently of attendance updates.
-- Accounts for portraits across the agreed cohort, with private identity evidence, authenticated image caching, visible rendering coverage and explicit unresolved guests.
+- Accounts for portraits across the agreed cohort, with private event/profile/official-page/search work lists, identity evidence, authenticated image caching, visible rendering coverage and explicit unresolved guests. Search results lead to reviewed original sources, never automatic thumbnail matches.
 - Serves an authenticated, mobile-friendly dashboard with read-only and per-member team access. Real guest data is private by default.
 
 ## Quick synthetic demo

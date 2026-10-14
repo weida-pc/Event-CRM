@@ -11,12 +11,15 @@ import hashlib
 import io
 import json
 import warnings
+from urllib.parse import urlencode, urlsplit
 
 from .core import canonical, config_binding, timestamp, utcnow
 from .research import _safe_url, _fetch_public_page
 from .photo_urls import image_url
 
 KINDS = ("event_avatar", "professional_profile", "official_page", "paid_result")
+UNPAID_CHECKS = KINDS[:3] + ("image_search",)
+CHECK_KINDS = UNPAID_CHECKS + ("paid_result",)
 OUTCOMES = ("pending", "not_found", "blocked", "ambiguous", "rejected")
 MAX_BYTES = 5 * 1024 * 1024
 MAX_PIXELS = 16_000_000
@@ -25,6 +28,48 @@ MIME = {"image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WEBP"}
 
 def fingerprint(value):
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def unchecked_sources(checks):
+    """A failed source is accounted for, never evidence about other sources."""
+    checked = {c["kind"] for c in checks}
+    return [kind for kind in UNPAID_CHECKS if kind not in checked]
+
+
+def discovery(profile, event_url, checks=()):
+    """Private, offline work list for the agent; no search/API calls or face matching.
+
+    Only name and professional company form a query. Search results are leads to
+    original pages, never identity proof or an acceptable thumbnail source.
+    """
+    terms = [str(profile.get(key, "")).replace('"', '').strip()[:200]
+             for key in ("name", "company")]
+    query = " ".join('"' + term + '"' for term in terms if term)
+    return {
+        "unchecked_sources": unchecked_sources(checks),
+        "event_url": event_url,
+        "professional_url": profile.get("linkedin_url", ""),
+        "web_search_url": "https://www.google.com/search?" + urlencode({"q": query}),
+        "image_search_url": "https://www.google.com/search?" + urlencode({"q": query, "tbm": "isch"}),
+        "alternative_image_search_url": "https://www.bing.com/images/search?" + urlencode({"q": query}),
+        "instructions": "Use an authorized search/browser tool. Inspect the exact event avatar, professional profile, official team/personal/speaker page, then web/image search if unresolved. Open the original page and corroborate identity before caching; never accept search thumbnails, visual resemblance or names alone. Stop at a verified portrait or record source-specific blockers. No paid calls implied.",
+    }
+
+
+def _outcome(meta):
+    outcome = meta.get("outcome", "pending")
+    # Older reviews without image-search accounting remain unfinished; no DB
+    # migration or change to the frozen guest/attendance records is needed.
+    if outcome == "not_found" and unchecked_sources(meta.get("source_checks", [])):
+        return "pending"
+    return outcome
+
+
+def _reject_search_thumbnail(url):
+    host = (urlsplit(url).hostname or "").lower()
+    if (host.endswith(".gstatic.com") and host.startswith("encrypted-tbn")
+            or host.endswith(".mm.bing.net") or host == "external-content.duckduckgo.com"):
+        raise ValueError("Review and download the original image, not a search thumbnail")
 
 
 def download(url):
@@ -100,8 +145,9 @@ def plan(store):
                        "linkedin_url": profile["linkedin_url"],
                        "event_avatar_hint": hint,
                        "action": "keep" if valid else "search", "candidates": [],
-                       "outcome": meta.get("outcome", "pending") if meta.get("outcome") != "stored" else "pending",
-                       "reason": meta.get("reason", ""), "source_checks": meta.get("source_checks", [])})
+                       "outcome": _outcome(meta) if meta.get("outcome") != "stored" else "pending",
+                       "reason": meta.get("reason", ""), "source_checks": meta.get("source_checks", []),
+                       "discovery": None if valid else discovery(profile, store.config["event"]["url"], meta.get("source_checks", []))})
     return {"schema_version": 1, "binding": config_binding(store.config), "people": people}
 
 
@@ -113,11 +159,12 @@ def report(store):
         profile = json.loads(g["profile"])
         meta = json.loads(p["metadata"]) if p else {}
         valid = p and p["identity"] == g["identity"] and p["asset"] is not None
-        state = "stored" if valid else ("identity_changed" if p and p["identity"] != g["identity"] else meta.get("outcome", "pending"))
+        state = "stored" if valid else ("identity_changed" if p and p["identity"] != g["identity"] else _outcome(meta))
         people.append({"id": g["alias"], "name": profile["name"], "company": profile["company"],
                        "state": state, "digest": p["digest"] if valid else "", "evidence": meta.get("evidence"),
                        "checked_at": meta.get("checked_at"), "last_attempt": meta.get("outcome", "pending"),
-                       "attempts": meta.get("attempts", []), "reason": meta.get("reason", "")})
+                       "attempts": meta.get("attempts", []), "reason": meta.get("reason", ""),
+                       "unchecked_sources": [] if valid else unchecked_sources(meta.get("source_checks", []) if not p or p["identity"] == g["identity"] else [])})
     counts = dict(Counter(p["state"] for p in people))
     return {"generated_at": utcnow().isoformat(), "tracked": len(people), "stored": counts.get("stored", 0),
             "unresolved": len(people) - counts.get("stored", 0), "counts": counts,
@@ -149,7 +196,9 @@ def _candidate(c, profile, config):
         raise ValueError("Event avatar must come from this exact authorized event")
     if c["kind"] == "paid_result" and c.get("paid_authorized") is not True:
         raise ValueError("Paid results require separate explicit authorization")
-    return {**c, "page_url": page, "image_url": image_url(c.get("image_url"))}
+    url = image_url(c.get("image_url"))
+    _reject_search_thumbnail(url)
+    return {**c, "page_url": page, "image_url": url}
 
 
 def _unchanged(item, old):
@@ -203,16 +252,18 @@ def apply(store, packet, *, fetcher=download):
         if item.get("outcome") not in OUTCOMES:
             raise ValueError("Unknown unresolved portrait outcome")
         checks = item.get("source_checks", [])
-        if not isinstance(checks, list) or len(checks) > 4:
-            raise ValueError("At most four source checks are permitted")
+        if not isinstance(checks, list) or len(checks) > len(CHECK_KINDS):
+            raise ValueError("At most five source checks are permitted")
         for check in checks:
-            if not isinstance(check, dict) or set(check) != {"kind", "result", "reason"} or check["kind"] not in KINDS or check["result"] not in {"not_found", "blocked", "ambiguous", "not_authorized"}:
+            if not isinstance(check, dict) or set(check) != {"kind", "result", "reason"} or check["kind"] not in CHECK_KINDS or check["result"] not in {"not_found", "blocked", "ambiguous", "not_authorized"}:
                 raise ValueError("Invalid source check")
             _text(check["reason"], "source check reason")
+        if len({c["kind"] for c in checks}) != len(checks):
+            raise ValueError("Summarize each source kind once; duplicate source checks are ambiguous")
         if item["action"] == "reject" or item["outcome"] != "pending":
             _text(item.get("reason"), "unresolved/rejection reason")
-        if item["outcome"] == "not_found" and not set(KINDS[:3]).issubset({c["kind"] for c in checks if c["result"] == "not_found"}):
-            raise ValueError("Not found requires accounting for event, professional and official sources")
+        if item["outcome"] == "not_found" and not set(UNPAID_CHECKS).issubset({c["kind"] for c in checks if c["result"] == "not_found"}):
+            raise ValueError("Not found requires event, professional, official and web/image-search checks; provider failure is not absence")
         prepared.append((g, item, sorted(candidates, key=lambda c: KINDS.index(c["kind"]))))
 
     if any(candidates for _, _, candidates in prepared):
@@ -251,6 +302,7 @@ def apply(store, packet, *, fetcher=download):
                 try:
                     response = fetcher(c["image_url"])
                     final_url = image_url(response.get("url", c["image_url"]))
+                    _reject_search_thumbnail(final_url)
                     if _same_source(final_url) in {_same_source(u) for u in rejected_urls}:
                         raise ValueError("Previously rejected redirected source")
                     candidate_asset = thumbnail(response)
