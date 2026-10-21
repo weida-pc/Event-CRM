@@ -15,6 +15,8 @@ out/
 *.log
 .pytest_cache/
 node_modules/
+.wrangler/
+.dev.vars*
 .DS_Store
 Thumbs.db
 *.pem

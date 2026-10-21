@@ -1,6 +1,77 @@
 # Event CRM — start here
 
-This is the complete onboarding playbook for an event host and their AI agent. Read it before using credentials, processing a real guest, starting a monitor, or publishing anything. Support is for **Luma and Partiful** (the event platform), not a product called Party.
+This is the complete onboarding playbook for an event host and their AI agent. Read it before using credentials, processing a real guest, starting a monitor, or publishing anything. The **Cloudflare product is Luma-only**. The independent Python toolkit supports **Luma and Partiful** (the event platform), not a product called Party. Choose one runtime; do not deploy the Python toolkit over an existing service to launch the Cloudflare product.
+
+## Cloudflare product: complete setup and release procedure
+
+This section is self-contained for the hosted product. Sections 1 onward below describe the separate agent-assisted Python toolkit; their token formats, polling process and lack of paid API calls do not describe `cloud/`.
+
+### Authorizations and prerequisites
+
+Obtain these before live deployment or real guest processing. Never request secret values in chat, Git, URLs or screenshots.
+
+| Party | Required input / permission |
+| --- | --- |
+| Service operator | Existing Cloudflare account; permission to create one NEW Worker and its NEW SQLite Durable Object namespaces. Account-read and Workers-script-write deployment access; no DNS, email, billing or existing-worker changes are needed for a `workers.dev` URL. OAuth/key grants may require the operator's action-time approval. Use the OS credential vault or a scoped CI secret. |
+| Event host | Luma Plus calendar-admin API key and canonical `https://luma.com/<slug>` event link. Confirm exact event ownership and permission for professional research and named team sharing. The key has broad calendar privileges at Luma, but this application only uses four documented GET endpoints. |
+| Audience owner | Host business website and a website for each separate sponsor; approved professional question mappings, ICP rules, named recipients, monitoring start/end and deletion date. A sponsor key additionally needs an exact mapped opt-in question/answer. No opt-in means no scoped sponsor key; do not invent consent. |
+| Research operator | Authorized Bright Data API key, an existing SERP zone and existing standard Web Unlocker zone; OR a Serper API key with both search and scrape credits. A Gemini API key with permission/quota for `gemini-2.5-flash-lite` structured extraction. Verify provider data-use terms are acceptable for the authorized professional inputs. |
+| Budget owner | Approve provider billing and hard limits. Defaults reserve at most $40/month across research and $15/workspace, leaving $50 for Cloudflare and $10 contingency inside a $100 project allowance. Use the Free Cloudflare plan without upgrading a shared account. Existing subscriptions and unrelated usage on shared keys are outside the app ledger. |
+
+Apify, Apollo, mailbox/email services, OpenAI and Anthropic API keys are not required by this hosted runtime. Apify is not called: a monthly-credit claim does not guarantee zero overage on a shared account. Do not enable a new actor or raise account limits as a fallback. Claude Code and browser-based reviewers are optional development reviewers, not runtime dependencies.
+
+### Build and synthetic verification
+
+Use a separate checkout of this repository, Node.js 22+ and npm. The lockfile pins the runtime tools. In `cloud/`:
+
+```sh
+npm ci --ignore-scripts
+npm test
+node --check public/app.js
+npm run check
+```
+
+`npm test` first bundles with Wrangler without deploying, then runs pure and Workers-runtime tests with fictional provider responses. Tests do not read operator credentials or make real provider calls. To click through the real UI with the synthetic backend:
+
+```sh
+node test/local-server.mjs
+```
+
+Open the printed loopback URL. Use `https://luma.com/fictional-demo` and `synthetic-calendar-key`. The harness binds only `127.0.0.1`, intercepts all provider traffic, and is not imported by production. Use `https://www.example.org/` as the fictional business website. Stop the harness when done. Run the Python/Partiful regression commands in this guide too; changes to `cloud/` must not affect that toolkit.
+
+### Deploy a separate private-data service
+
+1. Confirm the chosen Cloudflare account and Free plan. Set a unique `name` in `cloud/wrangler.jsonc` if `event-crm-luma` already belongs to something else. Never overwrite an existing service. Keep `LIVE_ADMISSION` set to `closed` during release verification.
+2. Authenticate the official Wrangler CLI with the operator's scoped authorized credential. `npx wrangler login --scopes account:read user:read workers_scripts:write --use-keyring` uses OAuth and an OS-vault-backed store when its native keyring support is available. If that support is unavailable, use an approved scoped API token in the process/CI secret environment instead; do not silently write OAuth credentials to an unapproved file.
+3. Run `npm run deploy` with admission closed. This creates only the named Worker, static assets and `Workspace`/`Control` SQLite Durable Objects. Record the exact HTTPS URL and deployed version returned by Wrangler; never construct or advertise an unverified URL.
+4. Supply secrets with interactive `npx wrangler secret put NAME` (or secret-store-to-stdin automation with no logging). Required names are `KEY_ENCRYPTION_SECRET` and `GEMINI_API_KEY`, plus either all three `BRIGHTDATA_API_KEY`, `BRIGHTDATA_SERP_ZONE`, `BRIGHTDATA_PAGE_ZONE`, or `SERPER_API_KEY`. Generate the encryption secret as at least 32 cryptographically random bytes encoded base64url (43 characters). Keep a protected operator copy for continuity; replacing it without migration makes stored Luma keys unreadable. Never put these in `wrangler.jsonc`, committed `.env` files, a browser frontend or deployment output.
+5. Verify provider credentials with small public/synthetic requests. An account listing alone does not prove search, page-reading, image results or model quota work. Bright Data uses its documented `/request` endpoint; Google parsed image responses use `original_image` for the source image and `image` for the thumbnail. Serper needs scrape as well as search credit. Do not buy credits or enable auto-recharge without the budget owner's authorization.
+6. Confirm current prices are below the reservation rates: Bright Data search/page $0.004/request; Serper search $0.002 and page $0.004; bounded Gemini extraction $0.006. Calls reserve before dispatch, including retries and timeouts; no uncertain charges are refunded. If pricing exceeds these bounds, keep admission closed and update/test the ledger first. Provider-native caps or dedicated prepaid credentials are needed for a hard account-wide ceiling; the app cannot constrain other clients of shared keys.
+7. Run the required independent reviews on source and fictional tests only, fix verified findings, and complete browser verification. Do not call a review complete without receiving its actual report. Run `python tools/privacy_check.py` from repository root and inspect the staged diff for private data and credentials before pushing.
+8. Change `LIVE_ADMISSION` to `open` only after verification, then redeploy the SAME Worker. Check the exact HTTPS root, `/demo`, `/privacy`, `/api/health`, unauthorized API rejection, security headers and an authorized test workspace. Confirm the browser never receives provider keys. Record which checks used synthetic fixtures and which used a real host-authorized event; never imply that fixtures prove live Luma access.
+
+No deploy command changes a VM, starts a real event, sends email, creates an ongoing desktop monitor or upgrades Cloudflare. For rollback, first close admission and deploy; existing retained workspaces remain usable. Roll back code through Cloudflare's version mechanism only after verifying schema compatibility. Do not delete a Durable Object namespace or rotate the encryption key as a troubleshooting shortcut.
+
+### Host flow
+
+1. Create a private workspace and save both the owner and separate backup key. Keys are shown once; they are not email accounts and there is no reset email. Save the workspace URL too—it contains no access token.
+2. Connect the Luma key and event link. Confirm the matched managed calendar event. Hosts/cohosts are excluded by Luma user ID, not by a hardcoded name list.
+3. Confirm up to five professional questions and the company/title/LinkedIn mappings. Contact, immigration, medical and other sensitive questions are excluded. Set the host and sponsor business websites, monitoring window and retention.
+4. Save the first complete preview. Website research starts automatically. Review source excerpts, apply or edit the proposed ICP/rules, and save a fresh preview. Exact answer buckets are appropriate for team-size ranges; larger teams can get more points. Check-ins lead within groups by default; turning that off makes fit score first within each group. Group 9 always stays last. Missing answers do not create positive evidence.
+5. Review the full non-host cohort and launch. The dashboard is created immediately. Professional identity/experience/portrait research runs automatically in separate bounded steps. It never generates faces or equates a failed provider with a nonexistent photo. Namesakes, unavailable sources and unresolved images remain explicit. The current hosted matcher requires full normalized name plus company anchors; variations can remain unresolved instead of being silently merged.
+6. Generate named editor/viewer keys as needed and share them privately. Each sponsor is a distinct `/w/<workspace>/a/<audience>` link plus a separate scoped key. Without that key the URL grants nothing. The server filters by scope and opt-in before returning answers, scores, reasons or exports. Sponsor viewers receive no research, private portraits or work notes. Host team keys can access the host's approved event data.
+7. Assign owners and follow-up states. Optimistic revisions prevent stale overwrites. Attendance publication only changes attendance/status fields; it never resets team work or portraits.
+
+### Operating boundaries and recovery
+
+- Beta limits: 500 registrations, five professional questions, five audiences, 25 active keys, 100 total keys, 100 concurrent sessions per workspace; 48-hour monitoring window; retention within 30 days. Admission is limited to five workspaces/day and 20/month. Public API capacity is bounded; an overloaded or quota-exhausted account may temporarily stop requests.
+- Full scans compare event/calendar binding, question definitions, counts, duplicates and every frozen identity. One mid-scan source change gets one fresh retry. Missing/changed identities or loss of a previously explicit check-in signal pause publication, retaining the previous snapshot. Registrations with no unambiguous ticket at import can remain unknown without blocking other guests' explicit check-ins. New registrations are counted for a separate explicit roster preview; they are not silently adopted. Use **Preview new / changed registrations**, review, adopt, then resume before the deadline.
+- Check-in comes only from one explicit Luma ticket timestamp/null. RSVP is never attendance. An empty/multiple ticket set is unknown. Unknown is not an absence claim.
+- Normal provider polls are approximately one minute plus complete-scan time, not instant webhooks. The browser refreshes while active and not being edited. Transient failures back off. A final scan has a three-minute grace window; after it closes, polling stops and the calendar key is removed. Paused/disconnected/ended polling does not remove the last-good dashboard. Its timestamp and stale/error state remain visible until retention deletion.
+- On expired Luma access, reconnect before the monitoring deadline. On identity drift, review the complete new roster. On exhausted research budget, completed data remains; do not loop paid calls or bypass the cap. On missing portraits, inspect the recorded source/attempt evidence; no placeholder counts as a recovered photo. Container checks do not establish likeness or prove browser rendering; browser load counts provide the separate rendering check.
+- Owner deletion and retention expiry remove active workspace data and keys. Cloudflare infrastructure recovery copies may remain for its recovery-retention period. Do not promise immediate removal of all backups. Lost owner keys require the separately saved backup; the service intentionally has no impersonation/reset backdoor.
+
+## Python toolkit procedure
 
 ## 1. Authorization and keys — ask up front
 

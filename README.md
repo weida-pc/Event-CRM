@@ -2,7 +2,16 @@
 
 Know which high-value prospects are checked in, why they match your business, and who on your team owns the conversation.
 
-Event CRM is a self-hosted, private lead dashboard for **Luma and Partiful** events. It combines host-approved ideal customer profiles (ICPs), relevant signup answers, recorded attendance, and persistent team assignments. It is an agent-assisted toolkit, not a hosted SaaS or a promise of automatic access to every provider account.
+Event CRM combines host-approved ideal customer profiles (ICPs), professional signup answers, recorded attendance, and persistent team assignments. Real guest data is private; public source code and demos contain fictional examples.
+
+Two independent runtimes share this repository:
+
+| Runtime | Provider access | Research and hosting |
+| --- | --- | --- |
+| `cloud/` customer-facing product | Luma calendar API key and event link | Automatic, budgeted website/profile/portrait research; Cloudflare Workers and isolated SQLite Durable Objects; separate sponsor access scopes |
+| `event_crm/` agent-assisted toolkit | Luma, authorized Partiful browser, or CSV | Human/agent-reviewed research; a private Python/SQLite server |
+
+The hosted release is Luma-only. Partiful remains available in the independent toolkit and is not offered as a hosted login. Deployment is an explicit operator action; this repository does not imply a live hosted service.
 
 ## One link for any agent
 
@@ -12,7 +21,17 @@ Give Codex, Claude Code, or another capable coding agent the link to **[START_HE
 
 The guide is the single onboarding entry point. `AGENTS.md` and `CLAUDE.md` route both agents to the same workflow. Nothing depends on a particular company, machine, event roster, VM, or agent vendor.
 
-## What it does
+## Hosted product
+
+The host confirms the exact managed event, professional fields, business websites and research purpose. Website-derived ICP proposals include source excerpts; the host reviews the rules and complete roster before launch. Each audience has its own ranking and question scope. Sponsor keys require a mapped sharing opt-in and never expose the host's research or other audience answers.
+
+Automatic research distinguishes corroborated identities, candidates, unavailable sources and unresolved portraits. It uses named original sources, not face matching or generated portraits. Portrait container validation, private caching and browser load counts are separate checks; no system can guarantee a photo exists or is retrievable everywhere online.
+
+Saved snapshots and assignments live independently of polling. Bounded alarms validate complete source pages before publication; failures retain the last good data. Named team keys, backup owner keys, encrypted Luma credentials, revocation and a retention deadline define workspace access. There is no billing system, email sender or email-based account recovery.
+
+The operator configures Bright Data or Serper plus Gemini in Worker secrets. Conservative shared reservations bound research spending. These estimates do not cap unrelated usage of shared provider accounts. The product has explicit guest, field, audience, monitoring-window and admission limits; it is a bounded beta rather than an unlimited public service.
+
+## Agent-assisted toolkit
 
 - Uses the host's business email domain to find a candidate website; researches observed product/customer pages without transmitting the full email. A human confirms the company and proposed ICP.
 - Scores professional evidence with configurable, explainable rules. Value-first is the default; priority groups can always remain above or below other groups regardless of attendance.
@@ -47,7 +66,7 @@ Luma monitoring can run in a normal bounded Python process. Partiful requires a 
 
 Attendance updates are all-or-nothing: one missing, changed or attendance-unknown tracked identity pauses the entire feed and preserves its last good state. Luma group registrations and registrations without explicit ticket state need particular attention during the host-authorized preflight. Offline tests do not certify a live provider account or current browser layout.
 
-One event configuration uses one private state directory. Run separate instances for separate events. This release does not include billing, an email sender, an automatic paid enrichment service, per-audience security isolation, or automatic public-cloud provisioning.
+The Python toolkit uses one private state directory per event. Run separate instances for separate events. Unlike the Cloudflare product, its audience tabs are not security boundaries and its research is agent-assisted. It does not make paid enrichment calls or provision public-cloud resources.
 
 ## Verification
 
@@ -62,6 +81,6 @@ python tools/privacy_check.py
 
 Tests use synthetic data and fake provider responses. Live provider access must be preflighted with the host's own authorization and account. See [SECURITY.md](SECURITY.md) for the trust model.
 
-Portrait preparation and image-validation tests use the optional Pillow dependency (`.[photos]`); the core demo and attendance service remain standard-library-only. Discovery/identity review is agent-assisted, not automatic face matching. The application does not call paid enrichment services.
+Portrait preparation and image-validation tests in the toolkit use the optional Pillow dependency (`.[photos]`); the core Python demo and attendance service remain standard-library-only. The toolkit does not call paid enrichment services. The hosted product's separate synthetic suite is `cd cloud && npm ci && npm test`; its tests never call real providers.
 
 [examples/ci-tests.yml](examples/ci-tests.yml) is an optional Windows/Linux GitHub Actions template. A repository owner can install it at `.github/workflows/tests.yml` with credentials authorized to manage workflows. It is not active by default; the commands above run all checks locally.
