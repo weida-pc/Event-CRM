@@ -58,3 +58,30 @@ test('isolated Worker lifecycle: authorization, import, scopes, concurrency, dur
     assert.ok(provider.calls.filter(c=>c.host==='public-api.luma.com').every(c=>c.method==='GET'));
   }finally{await mf.dispose();}
 });
+
+test('disconnect invalidates an in-flight Luma connection',{timeout:30000},async()=>{
+  const provider=fixture();
+  let release,entered;
+  const gate=new Promise(r=>{release=r;}),started=new Promise(r=>{entered=r;});
+  const mf=new Miniflare(convertV4MiniflareOptions({modules:true,scriptPath:'.wrangler/build/worker.js',compatibilityDate:'2026-10-20',cf:false,
+    durableObjects:{WORKSPACES:{className:'Workspace',useSQLite:true},CONTROL:{className:'Control',useSQLite:true}},
+    bindings:{KEY_ENCRYPTION_SECRET:'synthetic-encryption-secret-43-characters-long',LIVE_ADMISSION:'open',SERPER_API_KEY:'synthetic',GEMINI_API_KEY:'synthetic'},
+    outboundService:async request=>{entered();await gate;return provider.fetch(request);}}));
+  let session;
+  const request=async(path,body)=>{
+    const r=await mf.dispatchFetch('https://crm.test'+path,{method:body===undefined?'GET':'POST',headers:{Origin:'https://crm.test','Content-Type':'application/json',...(session?{Cookie:session}:{})},body:body===undefined?undefined:JSON.stringify(body)});
+    return {status:r.status,body:await r.json(),cookie:r.headers.get('set-cookie')?.split(';')[0]};
+  };
+  try {
+    const created=await request('/api/workspaces',{agree:true});const base=`/api/w/${created.body.id}/`;
+    session=(await request(base+'login',{key:created.body.ownerKey})).cookie;
+    const connecting=request(base+'connect',{hostConfirmed:true,eventUrl:'https://luma.com/fictional-demo',apiKey:'synthetic-calendar-key'});
+    await started;
+    assert.equal((await request(base+'disconnect',{})).status,200);
+    release();
+    assert.equal((await connecting).status,409);
+    const dashboard=(await request(base+'dashboard')).body;
+    assert.equal(dashboard.config.connected,false);
+    assert.equal(dashboard.config.sync.state,'disconnected');
+  } finally {release();await mf.dispose();}
+});

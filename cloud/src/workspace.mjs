@@ -71,7 +71,7 @@ export class Workspace extends DurableObject {
   }
   async fetch(request) {
     try {
-      const cfg=this.db.get('config');requireThat(cfg&&cfg.retentionEnd>Date.now(),'workspace_expired',404);
+      let cfg=this.db.get('config');requireThat(cfg&&cfg.retentionEnd>Date.now(),'workspace_expired',404);
       const u=new URL(request.url),action=u.pathname.split('/').slice(4).join('/');
       const body=request.method==='POST'?await input(request):null;
       if(action==='login'&&request.method==='POST') {
@@ -86,6 +86,8 @@ export class Workspace extends DurableObject {
         return json({ok:true},200,{'Set-Cookie':sessionCookie(s,cfg.id)});
       }
       const key=await this.authenticate(request);
+      // Authentication yields to other requests and alarms; never mutate its stale config.
+      cfg=this.db.get('config');requireThat(cfg&&cfg.retentionEnd>Date.now(),'workspace_expired',404);
       if(request.method==='GET') {
         if(action==='dashboard')return json(this.dashboard(key,cfg,u.searchParams.get('audience')));
         if(action==='keys'){requireThat(key.role==='owner','owner_required',403);return json({keys:this.keys(),budget:await this.control.budget(cfg.id)});}
@@ -119,12 +121,16 @@ export class Workspace extends DurableObject {
         requireThat(body.hostConfirmed===true,'authorization_required');
         requireThat(!cfg.monitorEnd||Date.now()<=cfg.monitorEnd,'monitoring_ended',409);
         requireThat(!this.db.get('scan'),'scan_in_progress',409);
-        const get=lumaClient(body.apiKey),kh=await hash(body.apiKey);
+        const get=lumaClient(body.apiKey),attempt=token();
+        cfg.connectionAttempt=attempt;this.db.put('config',cfg);
+        const kh=await hash(body.apiKey);
         const event=await resolveEvent(async(path,params)=>{try{await this.control.providerSlot(kh);}catch{throw new Fault('luma_rate_limited',429,60);}return get(path,params);},body.eventUrl);
         const encryptedKey=await encrypt(body.apiKey,this.env.KEY_ENCRYPTION_SECRET,cfg.id);
         const fresh=this.db.get('config');requireThat(fresh,'workspace_expired',404);
+        requireThat(fresh.connectionAttempt===attempt,'connection_cancelled',409);
+        requireThat(fresh.retentionEnd>Date.now()&&(!fresh.monitorEnd||Date.now()<=fresh.monitorEnd),'monitoring_ended',409);
         requireThat(!fresh.event||fresh.event.id===event.id&&fresh.event.calendarId===event.calendarId,'event_binding_immutable',409);
-        fresh.event=event;fresh.encryptedKey=encryptedKey;this.db.put('config',fresh);await this.schedule();return json({event});
+        delete fresh.connectionAttempt;fresh.event=event;fresh.encryptedKey=encryptedKey;this.db.put('config',fresh);await this.schedule();return json({event});
       }
       if(action==='configure') {
         requireThat(cfg.event&&!this.db.get('snapshot')&&!this.db.get('scan'),'configuration_locked',409);
@@ -176,7 +182,7 @@ export class Workspace extends DurableObject {
         await this.schedule();return json({ok:true});
       }
       if(action==='disconnect') {
-        delete cfg.encryptedKey;cfg.active=false;cfg.sync={...cfg.sync,state:'disconnected'};this.db.put('config',cfg);this.db.remove('scan');
+        delete cfg.connectionAttempt;delete cfg.encryptedKey;cfg.active=false;cfg.sync={...cfg.sync,state:'disconnected'};this.db.put('config',cfg);this.db.remove('scan');
         for(const [k] of this.db.prefix('scan-page:'))this.db.remove(k);
         await this.schedule();return json({ok:true});
       }
@@ -221,7 +227,7 @@ export class Workspace extends DurableObject {
     if(Date.now()>=cfg.retentionEnd){await this.erase();return;}
     try {
       if(cfg.encryptedKey&&Date.now()>cfg.monitorEnd+180000) {
-        cfg.active=false;delete cfg.encryptedKey;cfg.sync={...cfg.sync,state:'ended',error:cfg.finalScan?null:'final_scan_not_completed'};
+        cfg.active=false;delete cfg.connectionAttempt;delete cfg.encryptedKey;cfg.sync={...cfg.sync,state:'ended',error:cfg.finalScan?null:'final_scan_not_completed'};
         this.db.put('config',cfg);this.db.remove('scan');
         for(const [k] of this.db.prefix('scan-page:'))this.db.remove(k);
       }
@@ -233,7 +239,7 @@ export class Workspace extends DurableObject {
       // Separate bounded work step; never runs as part of source normalization or publication.
       const job=this.db.get('research-job');
       if(job&&!this.db.get('scan')&&!this.db.get('config')?.researchPaused&&job.nextAt<=Date.now())await researchStep(this);
-      cfg=this.db.get('config');if(cfg?.finalScan){cfg.active=false;delete cfg.encryptedKey;this.db.put('config',cfg);}
+      cfg=this.db.get('config');if(cfg?.finalScan){cfg.active=false;delete cfg.connectionAttempt;delete cfg.encryptedKey;this.db.put('config',cfg);}
     } catch {
       cfg=this.db.get('config');if(cfg){cfg.sync={...cfg.sync,error:'background_unavailable'};cfg.nextScan=Date.now()+60000;this.db.put('config',cfg);}
     } finally {await this.schedule();}
