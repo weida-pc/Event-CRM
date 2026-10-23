@@ -20,9 +20,13 @@ export class FixtureWorkspace extends Workspace {
   async fixture(values){for(const [k,v] of Object.entries(values))this.db.put(k,v);}
   async inspect(){return {config:this.db.get('config'),snapshot:this.db.get('snapshot'),work:this.db.get('work:g-one'),scan:this.db.get('scan')};}
   async tick(){const s=this.db.get('scan');if(s){s.nextAt=0;this.db.put('scan',s);}await this.alarm();}
+}
+export class FixtureControl extends Control {
+  async exhaustBackground(){this.db.put('rate:background:'+new Date().toISOString().slice(0,10),{n:3000,until:Date.now()+2*86400000});}
+  async exhaustLifetime(id){this.db.put('budget:ws:'+id,{reserved:15000000});}
 }`;
   const provider=fixture(),mf=new Miniflare(convertV4MiniflareOptions({modules:true,script,cf:false,compatibilityDate:'2026-10-20',
-    durableObjects:{WORKSPACES:{className:'FixtureWorkspace',useSQLite:true},CONTROL:{className:'Control',useSQLite:true}},
+    durableObjects:{WORKSPACES:{className:'FixtureWorkspace',useSQLite:true},CONTROL:{className:'FixtureControl',useSQLite:true}},
     bindings:{KEY_ENCRYPTION_SECRET:'synthetic-encryption-secret-43-characters-long'},outboundService:provider.fetch}));
   try{const cn=await mf.getDurableObjectNamespace('CONTROL'),control=cn.getByName('control'),ns=await mf.getDurableObjectNamespace('WORKSPACES');
     const id=await control.create('synthetic-ip'),w=ns.getByName(id);const keys=await w.initialize(id);
@@ -39,5 +43,15 @@ export class FixtureWorkspace extends Workspace {
     const callCount=provider.calls.length;
     await w.fixture({config:{...cfg,monitorEnd:Date.now()-181000}});await w.tick();
     const missed=await w.inspect();assert.equal(provider.calls.length,callCount);assert.equal(missed.config.encryptedKey,undefined);assert.equal(missed.snapshot.revision,final.snapshot.revision);
+    await control.exhaustBackground();
+    await w.fixture({config:{...cfg,monitorEnd:Date.now()+3600000}});await w.tick();
+    const capacity=await w.inspect();assert.equal(capacity.config.sync.error,'background_capacity_paused');
+    assert.equal(provider.calls.length,callCount);assert.equal(capacity.snapshot.revision,final.snapshot.revision);
+    const readable=await w.fetch('https://crm.test/api/w/'+id+'/dashboard',{headers:{cookie:session.cookie}});
+    assert.equal(readable.status,200,'background quota preserves authenticated snapshot access');
+    assert.equal((await readable.json()).people.length,2);
+    await control.exhaustLifetime(id);
+    await assert.rejects(()=>control.reserve(id,'synthetic-new-month',4000));
+    assert.equal((await control.budget(id)).workspaceReservedUsd,15);
   }finally{await mf.dispose();}
 });

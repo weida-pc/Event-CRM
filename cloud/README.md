@@ -8,4 +8,6 @@ Luma uses documented read-only GETs. Bright Data or Serper supply public search/
 
 The full setup, authorization, credentials, budget, deploy and host procedures are in the **Cloudflare product** section of the repository's single entrypoint, `START_HERE.md`. `npm test` exercises synthetic source and Workers-runtime fixtures; `npm run check` bundles without publishing. `node test/local-server.mjs` runs an explicit synthetic-only local UI harness, never a production backdoor.
 
-Admission is closed by default. A successful local build does not certify live provider access, public deployment, complete portrait coverage or a completed external review.
+The hosted beta is available at https://event-crm-luma.event-crm-cloud.workers.dev. Release verification uses closed admission before opening new-workspace creation. Local fixtures do not certify a host's live Luma access or complete portrait coverage.
+
+Background work has a separate daily capacity gate, preserving headroom for reading retained snapshots. Sponsor consent refreshes with complete attendance scans, while other answers remain frozen for explicit roster review. Sponsor assignment state is separate from the host and other sponsors. Oversized optional answers are explicitly omitted from ranking rather than blocking attendance; their originals remain in Luma.

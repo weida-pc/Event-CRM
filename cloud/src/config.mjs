@@ -1,5 +1,15 @@
 import {requireThat,text,redact,publicUrl,stamp} from './core.mjs';
 
+export function scoringRules(rules,questions) {
+  return rules.map(r=>{
+    requireThat(r&&['company','title',...questions].includes(r.field)&&['equals','number_gte'].includes(r.op),'invalid_rule');
+    requireThat(Number.isInteger(r.points)&&r.points>=-100&&r.points<=100&&Number.isInteger(r.group||0)&&(r.group||0)>=0&&(r.group||0)<=9,'invalid_points');
+    const value=redact(r.value,300);
+    requireThat(value&&(r.op!=='number_gte'||/^\d+(?:\.\d+)?$/.test(value)),'invalid_rule_value');
+    return {field:r.field,op:r.op,value,points:r.points,group:r.group||0,reason:redact(r.reason,200)};
+  });
+}
+
 export function configuration(body,event,now=Date.now()) {
   requireThat(body.hostConfirmed===true&&body.fieldsConfirmed===true&&body.researchConfirmed===true,'authorization_required');
   requireThat(Array.isArray(body.questions)&&body.questions.length<=5,'question_limit');
@@ -17,13 +27,8 @@ export function configuration(body,event,now=Date.now()) {
     requireThat(a.id===`aud-${i+1}`,'invalid_audience');
     requireThat(Array.isArray(a.questions)&&a.questions.every(id=>body.questions.includes(id)),'invalid_audience_question');
     requireThat(Array.isArray(a.rules)&&a.rules.length<=20,'rule_limit');
-    const rules=a.rules.map(r=>{
-      requireThat(['company','title',...a.questions].includes(r.field)&&['equals','number_gte'].includes(r.op),'invalid_rule');
-      requireThat(Number.isInteger(r.points)&&r.points>=-100&&r.points<=100&&Number.isInteger(r.group||0)&&(r.group||0)>=0&&(r.group||0)<=9,'invalid_points');
-      const value=redact(r.value,300);
-      requireThat(value&&(r.op!=='number_gte'||/^\d+(?:\.\d+)?$/.test(value)),'invalid_rule_value');
-      return {field:r.field,op:r.op,value,points:r.points,group:r.group||0,reason:redact(r.reason,200)};
-    });
+    const rules=scoringRules(a.rules,a.questions);
+    requireThat(i===0||a.optInQuestion&&a.questions.includes(a.optInQuestion)&&redact(a.optInValue,300),'sharing_consent_required');
     return {id:a.id,name:redact(a.name,80),website:publicUrl(a.website),icp:redact(a.icp||'',1500),
       questions:[...new Set(a.questions)],rules,attendanceFirst:a.attendanceFirst!==false,
       optInQuestion:a.optInQuestion&&a.questions.includes(a.optInQuestion)?a.optInQuestion:null,

@@ -11,7 +11,7 @@ Two independent runtimes share this repository:
 | `cloud/` customer-facing product | Luma calendar API key and event link | Automatic, budgeted website/profile/portrait research; Cloudflare Workers and isolated SQLite Durable Objects; separate sponsor access scopes |
 | `event_crm/` agent-assisted toolkit | Luma, authorized Partiful browser, or CSV | Human/agent-reviewed research; a private Python/SQLite server |
 
-The hosted release is Luma-only. Partiful remains available in the independent toolkit and is not offered as a hosted login. Deployment is an explicit operator action; this repository does not imply a live hosted service.
+The [hosted Luma beta](https://event-crm-luma.event-crm-cloud.workers.dev) accepts a calendar-admin API key and managed event link. Partiful remains available in the independent toolkit and is not offered as a hosted login. Self-hosted copies require their own explicit deployment and credentials.
 
 ## One link for any agent
 

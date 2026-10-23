@@ -23,6 +23,13 @@ export class Control extends DurableObject {
   exists(id) { const w=this.db.get('workspace:'+id); return !!w&&w.expires>Date.now(); }
   forget(id) { this.db.remove('workspace:'+id); }
   providerSlot(keyHash) { return this.takeRate('luma:'+keyHash,120,60000); }
+  backgroundSlot() {
+    // Keep paid-free-tier write headroom for retained dashboards and team work.
+    // This bounds this app, not unrelated Workers on a shared Cloudflare account.
+    const day=new Date().toISOString().slice(0,10);
+    try {this.takeRate('background:'+day,3000,2*86400000);return {ok:true};}
+    catch {return {ok:false,retryAt:Date.parse(day+'T00:00:00Z')+86400000};}
+  }
   reserve(id,operation,microUsd) {
     requireThat(this.exists(id),'not_found',404);
     requireThat(Number.isSafeInteger(microUsd)&&microUsd>0&&microUsd<=100000,'invalid_reservation');
@@ -32,13 +39,13 @@ export class Control extends DurableObject {
     // an app-enforced upper estimate, NOT a cap on other clients of shared accounts.
     const globalCap=Math.min(40_000_000,Number(this.env.MONTHLY_RESEARCH_MICRO_USD)||40_000_000);
     const perWorkspace=15_000_000;
-    const amount=total.workspaces[id]||0;
+    const amount=this.db.get('budget:ws:'+id,{reserved:0}).reserved;
     requireThat(total.reserved+microUsd<=globalCap&&amount+microUsd<=perWorkspace,'budget_paused',429);
     total.reserved+=microUsd; total.workspaces[id]=amount+microUsd; this.db.put(key,total);
+    this.db.put('budget:ws:'+id,{reserved:amount+microUsd});
     return {operation,reserved:microUsd}; // No refunds: ambiguous network charges remain reserved.
   }
   budget(id) {
-    const v=this.db.get('budget:'+new Date().toISOString().slice(0,7),{reserved:0,workspaces:{}});
-    return {workspaceReservedUsd:(v.workspaces[id]||0)/1e6,workspaceLimitUsd:15,monthlyServiceLimitUsd:40};
+    return {workspaceReservedUsd:this.db.get('budget:ws:'+id,{reserved:0}).reserved/1e6,workspaceLimitUsd:15,monthlyServiceLimitUsd:40};
   }
 }

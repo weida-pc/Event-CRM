@@ -88,7 +88,8 @@ export function checkIn(guest) {
 export function normalizeGuest(raw, selected, fields = {}) {
   const id = text(raw.id, 100), userId = text(raw.user_id, 100);
   requireThat(id && userId && statuses.includes(raw.approval_status), 'unsupported_guest', 502);
-  const answers = Object.create(null), source = raw.registration_answers || [];
+  const answers = Object.create(null), omittedAnswers = [], source = raw.registration_answers || [];
+  const mapped = new Set(Object.values(fields).filter(Boolean));
   requireThat(Array.isArray(source) && source.length <= 100, 'invalid_answers', 502);
   for (const q of selected) {
     const matches = source.filter(a => a.question_id === q.id);
@@ -96,6 +97,11 @@ export function normalizeGuest(raw, selected, fields = {}) {
     if (!matches.length) { answers[q.id] = ''; continue; }
     const a = matches[0];
     requireThat(a.question_type === q.type && redact(a.label, 300) === q.label, 'question_changed', 409);
+    // Oversized optional answers cannot stop attendance for the entire event.
+    // Never score an excerpt or silently shorten an identity/consent value.
+    const tooLong = typeof a.value === 'string' && a.value.length > 500
+      || Array.isArray(a.value) && (a.value.length > 20 || a.value.some(v => typeof v === 'string' && v.length > 300));
+    if (tooLong && !mapped.has(q.id)) { answers[q.id] = ''; omittedAnswers.push(q.id); continue; }
     if (a.value == null) answers[q.id] = '';
     else if (q.type === 'company') {
       requireThat(typeof a.value === 'object' && !Array.isArray(a.value), 'invalid_answer', 502);
@@ -112,9 +118,16 @@ export function normalizeGuest(raw, selected, fields = {}) {
     if (v && typeof v === 'object' && !Array.isArray(v)) return v[k] || '';
     return typeof v === 'string' ? v : '';
   };
-  return { id, userId, name: redact(raw.user_name || [raw.user_first_name, raw.user_last_name].filter(Boolean).join(' '), 150),
+  const person = { id, userId, name: redact(raw.user_name || [raw.user_first_name, raw.user_last_name].filter(Boolean).join(' '), 150),
     company: field('company'), title: field('title'), linkedin: linkedin(field('linkedin')),
-    answers, status: raw.approval_status, checkedIn: checkIn(raw) };
+    answers, omittedAnswers, status: raw.approval_status, checkedIn: checkIn(raw) };
+  const bytes = () => new TextEncoder().encode(JSON.stringify(person)).length;
+  for (const id of Object.keys(answers).filter(id => !mapped.has(id)).sort((a,b) => JSON.stringify(answers[b]).length-JSON.stringify(answers[a]).length)) {
+    if (bytes() <= 3000) break;
+    if (!omittedAnswers.includes(id)) { answers[id] = ''; omittedAnswers.push(id); }
+  }
+  requireThat(bytes() <= 3000, 'identity_size_limit', 422);
+  return person;
 }
 export function validateScan(before, after, rows, frozen = null) {
   requireThat(before.id === after.id && before.calendarId === after.calendarId && before.url === after.url

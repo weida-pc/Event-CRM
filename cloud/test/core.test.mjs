@@ -46,6 +46,24 @@ test('a changed question or duplicate answer rejects the scan',()=>{
   assert.throws(()=>normalizeGuest(g,[q]));
   g.registration_answers=[{...g.registration_answers[0],label:'Different'}]; assert.throws(()=>normalizeGuest(g,[q]));
 });
+
+test('oversized optional answers are explicit omissions, not a global attendance failure or ranking evidence',()=>{
+  const about={id:'about',label:'Professional background',type:'text',multiple:false};
+  const g=guest();g.registration_answers.push({question_id:'about',label:about.label,question_type:'text',value:'Long public biography '.repeat(100)});
+  const p=normalizeGuest(g,[q,about],{company:q.id,title:q.id});
+  assert.equal(p.answers.about,'');assert.deepEqual(p.omittedAnswers,['about']);assert.equal(p.company,'Example Labs');
+  assert.equal(p.checkedIn,false);assert.equal(rank([p],[{field:'about',op:'equals',value:'',points:50,reason:'Invalid'}])[0].score,0);
+});
+
+test('500 multilingual guests fit in a bounded complete snapshot without shortening identities',()=>{
+  const qs=Array.from({length:4},(_,i)=>({id:'q'+i,label:'Professional option '+i,type:'select',multiple:true}));
+  const rows=Array.from({length:500},(_,i)=>{
+    const g=guest('g-'+i);g.registration_answers.push(...qs.map(q=>({question_id:q.id,label:q.label,question_type:q.type,value:Array(20).fill('团队'.repeat(100))})));
+    return normalizeGuest(g,[q,...qs],{company:q.id,title:q.id});
+  });
+  assert.equal(rows.length,500);assert.ok(new TextEncoder().encode(JSON.stringify({people:rows})).length<1_900_000);
+  assert.ok(rows.every(p=>p.company==='Example Labs'&&p.omittedAnswers.length));
+});
 test('complete source validation rejects duplicates, missing rows and moving counts',()=>{
   const d=detail(); assert.equal(validateScan(d,d,[person('g-1')]).guests.length,1);
   assert.throws(()=>validateScan(d,d,[])); assert.throws(()=>validateScan(d,d,[person('g-1'),person('g-1')]));

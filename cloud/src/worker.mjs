@@ -26,8 +26,9 @@ export default {
       }
       const m=url.pathname.match(/^\/api\/w\/([A-Za-z0-9_-]{24})\/[a-z/]+(?:[^?]*)$/);
       requireThat(m&&await control.exists(m[1]),'not_found',404);
-      // Bound app DO traffic below the shared Free-tier daily request allocation.
-      try {await control.takeRate('requests:global',20000,86400000);}
+      // Bound unauthenticated ingress separately; only valid sessions use the global allowance.
+      const ipHash=await hash((request.headers.get('cf-connecting-ip')||'local')+env.KEY_ENCRYPTION_SECRET);
+      try {await control.takeRate('ingress:'+ipHash,120,60000);}
       catch {throw new Fault('capacity_paused',429,60);}
       return await env.WORKSPACES.getByName(m[1]).fetch(request);
     }catch(error){return errorResponse(error);}

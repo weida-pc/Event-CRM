@@ -10,6 +10,6 @@
     {"name":"CONTROL","class_name":"Control"}
   ]},
   "migrations": [{"tag":"v1","new_sqlite_classes":["Workspace","Control"]}],
-  "vars": {"MONTHLY_RESEARCH_MICRO_USD":"40000000", "LIVE_ADMISSION":"closed"},
+  "vars": {"MONTHLY_RESEARCH_MICRO_USD":"40000000", "LIVE_ADMISSION":"open"},
   "observability": {"enabled":false}
 }

@@ -57,3 +57,24 @@ test('optional dashboard banners never render literal null strings',()=>{
   vm.runInContext('data=fixture; renderDashboard();',h.context);
   assert.ok(!h.app.children.includes('null'));assert.ok(!h.app.children.includes('undefined'));
 });
+
+test('a scoped key can use the base workspace URL without requesting the host audience',async()=>{
+  let path;const h=ui(async url=>{path=url;return {ok:true,json:async()=>({config:{event:{}},revision:1,audience:{id:'aud-2'}})};});
+  vm.runInContext('renderDashboard=()=>{};',h.context);await vm.runInContext('load()',h.context);
+  assert.equal(path,'/api/w/'+ 'a'.repeat(24)+'/dashboard');assert.equal(vm.runInContext('audienceId',h.context),'aud-2');
+});
+
+test('pending mutations lock editable controls and restore their prior state even on failure',async()=>{
+  for(const failed of [false,true]){
+    const h=ui(()=>{throw new Error('No HTTP in control-lock test');});
+    const controls=['button','input','select','textarea'].map(tag=>({tag,disabled:false}));
+    controls.push({tag:'button',disabled:true});
+    h.document.querySelectorAll=selector=>{assert.equal(selector,'button,input,select,textarea');return controls;};
+    let finish;h.context.save=()=>new Promise((resolve,reject)=>{finish=()=>failed?reject(new Error('synthetic failure')):resolve();});
+    const pending=vm.runInContext('task(save)',h.context);
+    assert.ok(controls.every(node=>node.disabled));
+    finish();await pending;
+    assert.deepEqual(controls.map(node=>node.disabled),[false,false,false,false,true]);
+    assert.equal(vm.runInContext('busy',h.context),false);
+  }
+});

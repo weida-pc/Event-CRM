@@ -2,6 +2,7 @@ import {Fault,requireThat,redact,publicUrl,linkedin} from './core.mjs';
 import {boundedBody} from './luma.mjs';
 import {token} from './security.mjs';
 import {cleanRaster} from './image.mjs';
+import {scoringRules} from './config.mjs';
 
 export const normalizeName=s=>String(s||'').normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
 export function containsPhrase(source,phrase) {
@@ -50,8 +51,12 @@ export async function page(w,url) {
     return extractPage(r.body,checked);
   }
   const r=await requestJson(w,'https://scrape.serper.dev',{url:checked,includeMarkdown:true},'X-API-KEY',w.env.SERPER_API_KEY,4000,'source_page');
-  const body=clipping(r.markdown||r.text||'',14000);requireThat(body.length>=40,'source_unavailable',502);
-  return {url:checked,title:clipping(r.metadata?.title||r.title||'',400),body,capturedAt:Date.now()};
+  const raw=String(r.markdown||r.text||'').slice(0,14000);
+  // Parse named image references before text redaction can damage numeric CDN IDs.
+  const images=[...raw.matchAll(/!\[([^\]]{1,400})\]\((https:\/\/[^\s)]+)(?:\s+"[^"]*")?\)/g)]
+    .slice(0,100).map(m=>({alt:clipping(m[1],400),url:safeLink(m[2])})).filter(i=>i.url);
+  const body=clipping(raw,14000);requireThat(body.length>=40,'source_unavailable',502);
+  return {url:checked,title:clipping(r.metadata?.title||r.title||'',400),body,images,capturedAt:Date.now()};
 }
 export async function extractPage(html,url) {
   let title='',body='';const images=[],links=[];
@@ -60,7 +65,7 @@ export async function extractPage(html,url) {
     .on('img',{element(e){const alt=e.getAttribute('alt')||'',src=e.getAttribute('src');if(alt&&src&&images.length<100){try{images.push({alt:clipping(alt,400),url:publicUrl(new URL(src,url).href)});}catch{}}}})
     .on('a[href]',{element(e){if(links.length<100){try{const link=linkedin(new URL(e.getAttribute('href'),url).href);if(link)links.push(link);}catch{}}}});
   const clean=await rewriter.transform(new Response(html)).text();
-  await new HTMLRewriter().on('body',{text(t){if(body.length<14000)body+=t.text+' ';}}).transform(new Response(clean)).text();
+  await new HTMLRewriter().on('body',{text(t){if(body.length<14000)body+=t.text+(t.lastInTextNode?' ':'');}}).transform(new Response(clean)).text();
   requireThat(body.length>=40,'source_unavailable',502);
   return {url,title:clipping(title,400),body:clipping(body,14000),images,links,capturedAt:Date.now()};
 }
@@ -84,7 +89,7 @@ export async function proposeICP(w,audience,questions) {
   requireThat(typeof result.quote==='string'&&result.quote.length>=12&&source.body.includes(result.quote),'unsupported_icp_evidence',502);
   requireThat(Array.isArray(result.rules)&&result.rules.length<=8,'invalid_model_output',502);
   return {summary:clipping(result.summary,1500),quote:clipping(result.quote,400),sources:[{url:source.url,capturedAt:source.capturedAt}],
-    rules:result.rules,approvalRequired:true};
+    rules:scoringRules(result.rules,audience.questions),approvalRequired:true};
 }
 export function queueICP(w,cfg) {
   for(const audience of cfg.audiences) {
@@ -113,31 +118,36 @@ export function corroborate(person,profile,independent) {
 }
 export function namedImage(source,person,imageUrl) {
   if(!containsPhrase(source.title+' '+source.body,person.name))return false;
-  if(source.images?.some(i=>containsPhrase(i.alt,person.name)&&safeLink(i.url)===safeLink(imageUrl)))return true;
+  const exact=images=>[...new Set(images.filter(i=>normalizeName(i.alt)===normalizeName(person.name)).map(i=>safeLink(i.url)).filter(Boolean))];
+  const named=exact(source.images||[]);
+  if(named.length===1&&named[0]===safeLink(imageUrl))return true;
   // Require the ORIGINAL page to associate the exact image with the person's name.
   // A Google thumbnail or a nearby unrelated photo is never enough.
   const matches=[...source.body.matchAll(/!\[([^\]]{1,400})\]\((https:\/\/[^\s)]+)(?:\s+"[^"]*")?\)/g)];
-  return matches.some(m=>containsPhrase(m[1],person.name)&&safeLink(m[2])===safeLink(imageUrl));
+  const urls=exact(matches.map(m=>({alt:m[1],url:m[2]})));
+  return urls.length===1&&urls[0]===safeLink(imageUrl);
 }
-function imageHost(url) {
+function imageHost(url,source) {
   const u=new URL(publicUrl(url));
-  requireThat(['media.licdn.com','encrypted-tbn0.gstatic.com','encrypted-tbn1.gstatic.com','encrypted-tbn2.gstatic.com','encrypted-tbn3.gstatic.com'].includes(u.hostname),'unsupported_image_host');
+  requireThat(u.hostname==='media.licdn.com'||u.hostname===new URL(publicUrl(source.url)).hostname,'unsupported_image_host');
   requireThat(!u.searchParams.has('url'),'invalid_image_url');return u.href;
 }
 export function imageMime(bytes) {
   return cleanRaster(bytes)?.mime||null;
 }
 async function cacheImage(w,id,url,source,stillValid=()=>!!w.db.get('config')) {
-  const response=await fetch(imageHost(url),{redirect:'manual',signal:AbortSignal.timeout(10000)});
+  const response=await fetch(imageHost(url,source),{redirect:'manual',signal:AbortSignal.timeout(10000)});
   requireThat(response.ok,'photo_download_failed',502);
   const clean=cleanRaster(await boundedBody(response,200000)),bytes=clean?.bytes,mime=clean?.mime;
   requireThat(mime&&response.headers.get('content-type')?.split(';')[0]===mime,'invalid_image',502);
   const digest=await crypto.subtle.digest('SHA-256',bytes);
   const imageHash=Array.from(new Uint8Array(digest)).join(',');
-  requireThat(!w.db.prefix('photo:').some(([key,p])=>key!=='photo:'+id&&p.hash===imageHash),'duplicate_portrait',409);
+  const hashes=w.db.get('photo-hashes',{});
+  requireThat(!Object.entries(hashes).some(([key,value])=>key!==id&&value===imageHash),'duplicate_portrait',409);
   requireThat(stillValid(),'research_superseded',409);
   let base64='';for(let i=0;i<bytes.length;i+=8192)base64+=String.fromCharCode(...bytes.slice(i,i+8192));
   w.db.put('photo:'+id,{base64:btoa(base64),mime,hash:imageHash,source:source.url,capturedAt:Date.now()});
+  hashes[id]=imageHash;w.db.put('photo-hashes',hashes);
 }
 export function queueResearch(w,people) {
   const pending=people.filter(p=>{const result=w.db.get('research:'+p.id);return !result||result.photoState==='pending';}).map(p=>p.id);
@@ -148,7 +158,7 @@ export async function researchStep(w) {
   const job=w.db.get('research-job'),cfg=w.db.get('config');if(!job||!cfg)return;
   const person=w.db.get('snapshot')?.people.find(p=>p.id===job.ids[job.index]);
   if(!person){w.db.remove('research-job');return;}
-  const initialIndex=job.index;
+  const initialIndex=job.index,initialStage=job.stage;
   const valid=()=>w.db.get('config')?.setupVersion===cfg.setupVersion&&w.db.get('research-job')?.generation===job.generation&&w.db.get('research-job')?.index===initialIndex;
   let result=w.db.get('research:'+person.id,{state:'searching',photoState:'pending',sources:[],attempts:[]});
   const finish=()=>{job.index++;job.stage='search';job.attempt=0;delete job.candidates;delete job.profile;delete job.profileUrl;delete job.independent;};
@@ -169,10 +179,11 @@ export async function researchStep(w) {
       const rows=await search(w,`${quotation(person.name)} ${quotation(person.company)} -site:linkedin.com biography team`);if(!valid())return;
       job.candidates=rows.filter(r=>containsPhrase(r.title+' '+r.snippet,person.name)&&!linkedin(r.url)).slice(0,2);job.stage='independent';
     } else if(job.stage==='independent') {
-      const next=job.candidates?.shift();
+      const next=job.candidates?.[0];
       if(!next){result={...result,state:'candidate',reason:'No independent name-and-company corroboration. Any portrait requires a named professional source.'};job.stage='direct_photo';}
       else {
         const source=await page(w,next.url);if(!valid())return;
+        job.candidates.shift();job.attempt=0;
         result.sources.push({url:source.url,kind:'biography',excerpt:clipping(source.body,1200)});
         if(!job.profile.body&&containsPhrase(source.body,person.name)&&containsPhrase(source.body,person.company))job.profile=source;
         else if(corroborate(person,job.profile,source)){job.independent=source;job.stage='extract';}
@@ -182,7 +193,8 @@ export async function researchStep(w) {
       if(!valid())return;
       requireThat(Array.isArray(extracted.facts)&&extracted.facts.length<=8,'invalid_model_output',502);
       result.facts=extracted.facts.filter(f=>typeof f.quote==='string'&&f.quote.length>=12&&job.profile.body.includes(f.quote)
-        &&containsPhrase(f.quote,f.company)&&containsPhrase(f.quote,f.title))
+        &&containsPhrase(f.quote,f.company)&&containsPhrase(f.quote,f.title)
+        &&(linkedin(job.profile.url)||containsPhrase(f.quote,person.name)))
         .map(f=>({company:clipping(f.company,150),title:clipping(f.title,150),period:clipping(f.period,80),quote:clipping(f.quote,500),source:job.profile.url}));
       result.state='corroborated';result.linkedin=linkedin(job.profile.url)||([job.profile,job.independent].some(s=>s.links?.includes(job.profileUrl))?job.profileUrl:null);
       result.reason='Full name and stated company occur in two separate named sources. This is evidence, not a guarantee.';
@@ -191,15 +203,18 @@ export async function researchStep(w) {
       const sources=[job.profile,job.independent].filter(s=>s?.body&&containsPhrase(s.body,person.company));
       const source=sources.find(s=>s.images?.some(i=>new URL(i.url).hostname==='media.licdn.com'&&namedImage(s,person,i.url)));
       if(source){const candidate=source.images.find(i=>new URL(i.url).hostname==='media.licdn.com'&&namedImage(source,person,i.url));
-        await cacheImage(w,person.id,candidate.url,source,valid);if(!valid())return;result.photoState='stored';finish();}
+        if(result.state==='corroborated'){await cacheImage(w,person.id,candidate.url,source,valid);if(!valid())return;result.photoState='stored';}
+        else {result.photoState='needs_review';result.photoReason='A name-labelled portrait was found, but independent identity corroboration is still required.';}
+        finish();}
       else job.stage='images';
     } else if(job.stage==='images') {
       const images=await search(w,`${quotation(person.name)} ${quotation(person.company)} portrait`,true);if(!valid())return;
-      // Match the original page AND its name-labelled image before using a thumbnail.
+      // Search thumbnails are discovery only. Cache the named original, never the thumbnail.
       const sources=[job.profile,job.independent].filter(s=>s?.body&&containsPhrase(s.body,person.company));
       const hit=images.find(i=>sources.some(s=>safeLink(s.url)===safeLink(i.url)&&namedImage(s,person,i.image)));
-      if(hit){const src=[job.profile,job.independent].find(s=>s.url===hit.url);await cacheImage(w,person.id,
-        new URL(hit.image).hostname==='media.licdn.com'?hit.image:hit.thumbnail,src,valid);if(!valid())return;result.photoState='stored';}
+      if(hit&&result.state==='corroborated'){const src=[job.profile,job.independent].find(s=>s.url===hit.url);await cacheImage(w,person.id,
+        hit.image,src,valid);if(!valid())return;result.photoState='stored';}
+      else if(hit){result.photoState='needs_review';result.photoReason='A name-labelled portrait was found, but independent identity corroboration is still required.';}
       else {result.photoState='unresolved';result.photoReason='No original name-labelled portrait was verified in the reviewed sources. This does not mean no photo exists.';}
       result.attempts.push({kind:'image_search',outcome:result.photoState});finish();
     }
@@ -215,7 +230,7 @@ export async function researchStep(w) {
       if(job.stage==='search'){job.profile={url:'',title:'',body:''};job.profileUrl=person.linkedin;job.stage=person.linkedin?'profile':'independent_search';job.attempt=0;}
       else if(job.stage==='profile') {job.profile={url:job.profileUrl,title:'',body:''};job.stage='independent_search';job.attempt=0;}
       else if(job.stage==='direct_photo'){job.stage='images';job.attempt=0;}
-      else if(job.stage==='independent'&&job.candidates?.length){job.attempt=0;}
+      else if(job.stage==='independent'&&job.candidates?.length){job.candidates.shift();job.attempt=0;}
       else if(['extract','independent','independent_search'].includes(job.stage)){
         result.state=job.independent?'corroborated':'candidate';result.reason='Professional evidence retained; one research source was unavailable. Portrait discovery continues.';
         job.stage='direct_photo';job.attempt=0;
@@ -224,6 +239,7 @@ export async function researchStep(w) {
     }
   }
   if(!valid())return;
+  if(job.stage!==initialStage)job.attempt=0;
   result.updatedAt=Date.now();w.db.put('research:'+person.id,result);
   if(job.index>=job.ids.length)w.db.remove('research-job');
   else {job.nextAt=Math.max(job.nextAt,Date.now()+1000);w.db.put('research-job',job);}

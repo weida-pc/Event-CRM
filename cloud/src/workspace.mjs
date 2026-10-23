@@ -40,14 +40,18 @@ export class Workspace extends DurableObject {
     let people=snapshot?.people||[];
     if(key.audience) {
       requireThat(audience.optInQuestion&&audience.optInValue,'sharing_consent_required',403);
+      // A failed complete scan cannot certify that a previous sharing opt-in still holds.
+      if(cfg.sync?.error)people=[];
       people=people.filter(p=>{
         const v=p.answers[audience.optInQuestion];return (Array.isArray(v)?v:[v]).includes(audience.optInValue);
       });
     }
     // Scope before score/explanation/filter/export. Research is not shared with sponsor keys.
-    people=people.map(p=>({id:p.id,name:p.name,company:p.company,title:p.title,linkedin:p.linkedin,
+    const permitted=field=>!key.audience||audience.questions.includes(cfg.fields?.[field]);
+    people=people.map(p=>({id:p.id,name:p.name,company:permitted('company')?p.company:'',title:permitted('title')?p.title:'',linkedin:permitted('linkedin')?p.linkedin:null,
       checkedIn:p.checkedIn,status:p.status,
-      answers:Object.fromEntries(audience.questions.map(id=>[id,p.answers[id]??'']))}));
+      answers:Object.fromEntries(audience.questions.map(id=>[id,p.answers[id]??''])),
+      omittedAnswers:(p.omittedAnswers||[]).filter(id=>audience.questions.includes(id))}));
     return {audience,people:rank(people,audience.rules,audience.attendanceFirst)};
   }
   dashboard(key,cfg,audienceId) {
@@ -58,20 +62,24 @@ export class Workspace extends DurableObject {
     }
     const {audience,people}=this.peopleFor(key,cfg,snapshot,audienceId);
     return {role:key.role,keyId:key.id,audience,
-      config:key.role==='owner'?this.publicConfig(cfg):{id:cfg.id,event:{name:cfg.event.name,url:cfg.event.url},sync:cfg.sync,retentionEnd:cfg.retentionEnd,active:cfg.active},
+      config:key.role==='owner'?this.publicConfig(cfg):{id:cfg.id,event:{name:cfg.event.name,url:cfg.event.url},sync:cfg.sync,retentionEnd:cfg.retentionEnd,active:cfg.active,
+        researchState:key.audience?undefined:cfg.researchPaused?'budget_paused':this.db.get('research-job')?'running':cfg.researchState},
       audiences:(key.audience?[audience]:cfg.audiences).map(a=>({id:a.id,name:a.name})),
       questions:cfg.selected.filter(q=>audience.questions.includes(q.id)),
       people:people.map(p=>({...p,
-        work:key.role==='viewer'?undefined:this.db.get('work:'+p.id,{revision:0,owner:null,status:'new'}),
+        work:key.role==='viewer'?undefined:this.db.get(this.workKey(key,p.id),{revision:0,owner:null,status:'new'}),
         research:key.audience?undefined:this.db.get('research:'+p.id,{state:'pending',photoState:'pending'})})),
       capturedAt:snapshot.capturedAt,revision:snapshot.revision,
       extraCount:key.audience?undefined:snapshot.extraCount,
       team:key.role==='viewer'?[]:this.keys().filter(k=>!k.revoked&&k.role!=='viewer'&&(!key.audience||k.audience===key.audience)).map(k=>({id:k.id,name:k.name})),
       preview:key.role==='owner'?this.db.get('preview'):undefined};
   }
+  workKey(key,id) {return key.audience?'scoped-work:'+key.audience+':'+id:'work:'+id;}
   async fetch(request) {
     try {
-      let cfg=this.db.get('config');requireThat(cfg&&cfg.retentionEnd>Date.now(),'workspace_expired',404);
+      let cfg=this.db.get('config');
+      if(cfg&&cfg.retentionEnd<=Date.now()){await this.erase();throw new Fault('workspace_expired',404);}
+      requireThat(cfg,'workspace_expired',404);
       const u=new URL(request.url),action=u.pathname.split('/').slice(4).join('/');
       const body=request.method==='POST'?await input(request):null;
       if(action==='login'&&request.method==='POST') {
@@ -80,12 +88,18 @@ export class Workspace extends DurableObject {
         requireThat(/^[A-Za-z0-9_-]{43}$/.test(body.key||''),'invalid_access_key',401);
         const keyHash=await hash(body.key),key=this.db.get('key:'+keyHash);
         requireThat(key&&!key.revoked,'invalid_access_key',401);
-        for(const [k,v] of this.db.prefix('session:')) if(v.expires<Date.now())this.db.remove(k);
+        requireThat(this.db.get('config'),'workspace_expired',404);
+        for(const [k,v] of this.db.prefix('session:'))if(v.expires<Date.now()||this.db.get('key:'+v.keyHash)?.revoked)this.db.remove(k);
+        const own=this.db.prefix('session:').filter(([,v])=>v.keyHash===keyHash).sort((a,b)=>a[1].expires-b[1].expires);
+        for(const [k] of own.slice(0,Math.max(0,own.length-3)))this.db.remove(k);
         requireThat(this.db.prefix('session:').length<100,'session_limit',429);
         const s=token();this.db.put('session:'+await hash(s),{keyHash,expires:Date.now()+43200000});
         return json({ok:true},200,{'Set-Cookie':sessionCookie(s,cfg.id)});
       }
       const key=await this.authenticate(request);
+      // Invalid sessions cannot drain the authenticated service request allowance.
+      try {await this.control.takeRate('requests:global',5000,86400000);}
+      catch {throw new Fault('capacity_paused',429,60);}
       // Authentication yields to other requests and alarms; never mutate its stale config.
       cfg=this.db.get('config');requireThat(cfg&&cfg.retentionEnd>Date.now(),'workspace_expired',404);
       if(request.method==='GET') {
@@ -95,6 +109,7 @@ export class Workspace extends DurableObject {
           requireThat(!key.audience,'scope_denied',403);
           const personId=decodeURIComponent(action.slice(6)),snapshot=this.db.get('snapshot');
           requireThat(snapshot?.people.some(p=>p.id===personId),'not_found',404);
+          requireThat(this.db.get('research:'+personId)?.state==='corroborated','portrait_review_required',409);
           const photo=this.db.get('photo:'+personId);requireThat(photo,'not_found',404);
           return new Response(Uint8Array.from(atob(photo.base64),c=>c.charCodeAt(0)),{headers:{...securityHeaders,'Content-Type':photo.mime}});
         }
@@ -108,13 +123,13 @@ export class Workspace extends DurableObject {
         requireThat(['owner','team'].includes(key.role),'read_only',403);
         const {people}=this.peopleFor(key,cfg,this.db.get('snapshot'),body.audience);
         requireThat(people.some(p=>p.id===body.personId),'not_found',404);
-        const old=this.db.get('work:'+body.personId,{revision:0,owner:null,status:'new'});
+        const workKey=this.workKey(key,body.personId),old=this.db.get(workKey,{revision:0,owner:null,status:'new'});
         requireThat(body.revision===old.revision,'work_conflict',409);
         requireThat(['new','contacted','meeting','done','skip'].includes(body.status),'invalid_work_status');
         const owner=body.owner?this.keys().find(k=>k.id===body.owner&&!k.revoked&&k.role!=='viewer'):null;
         requireThat(!body.owner||owner&&(!key.audience||owner.audience===key.audience),'invalid_owner');
         const next={revision:old.revision+1,owner:owner?.id||null,status:body.status,updatedAt:Date.now(),updatedBy:key.id};
-        this.db.put('work:'+body.personId,next);return json(next);
+        this.db.put(workKey,next);return json(next);
       }
       requireThat(key.role==='owner','owner_required',403);
       if(action==='connect') {
@@ -130,11 +145,14 @@ export class Workspace extends DurableObject {
         requireThat(fresh.connectionAttempt===attempt,'connection_cancelled',409);
         requireThat(fresh.retentionEnd>Date.now()&&(!fresh.monitorEnd||Date.now()<=fresh.monitorEnd),'monitoring_ended',409);
         requireThat(!fresh.event||fresh.event.id===event.id&&fresh.event.calendarId===event.calendarId,'event_binding_immutable',409);
-        delete fresh.connectionAttempt;fresh.event=event;fresh.encryptedKey=encryptedKey;this.db.put('config',fresh);await this.schedule();return json({event});
+        delete fresh.connectionAttempt;fresh.event=event;fresh.encryptedKey=encryptedKey;
+        if(this.db.get('snapshot')){fresh.sync={...fresh.sync,state:fresh.active?'scheduled':'paused',error:null};fresh.nextScan=Date.now();}
+        this.db.put('config',fresh);await this.schedule();return json({event});
       }
       if(action==='configure') {
         requireThat(cfg.event&&!this.db.get('snapshot')&&!this.db.get('scan'),'configuration_locked',409);
-        const setup=configuration(body,cfg.event);Object.assign(cfg,setup);cfg.setupVersion=token();
+        const setup=configuration(body,cfg.event);requireThat(setup.retentionEnd<=cfg.createdAt+30*86400000,'invalid_retention');
+        Object.assign(cfg,setup);cfg.setupVersion=token();
         this.db.put('config',cfg);queueICP(this,cfg);this.db.remove('preview');startScan(this,{preview:true});await this.schedule();return json({ok:true});
       }
       if(action==='icp') {
@@ -152,7 +170,7 @@ export class Workspace extends DurableObject {
         cfg.active=true;cfg.nextScan=Date.now();cfg.sync={state:'scheduled',lastSuccess:preview.capturedAt,error:null};
         this.db.transaction(()=>{
           this.db.put('config',cfg);this.db.put('snapshot',{people:preview.people,capturedAt:preview.capturedAt,revision:1,extraCount:0});
-          this.db.remove('preview');queueResearch(this,preview.people);
+          this.db.remove('preview');queueResearch(this,rank(preview.people,cfg.audiences[0].rules,cfg.audiences[0].attendanceFirst));
         });await this.schedule();return json({ok:true});
       }
       if(action==='preview') {
@@ -169,8 +187,14 @@ export class Workspace extends DurableObject {
           }
           const retained=new Set(preview.people.map(p=>p.id));
           for(const p of old.people)if(!retained.has(p.id))for(const prefix of ['work:','research:','photo:'])this.db.remove(prefix+p.id);
+          for(const [k] of this.db.prefix('scoped-work:'))if(!retained.has(k.split(':').slice(2).join(':')))this.db.remove(k);
+          const hashes=this.db.get('photo-hashes',{});
+          for(const id of Object.keys(hashes))if(!retained.has(id)||identity(existing.get(id))!==identity(preview.people.find(p=>p.id===id)))delete hashes[id];
+          this.db.put('photo-hashes',hashes);
           this.db.put('snapshot',{people:preview.people,capturedAt:preview.capturedAt,revision:old.revision+1,extraCount:0});
-          this.db.remove('preview');queueResearch(this,preview.people);cfg.sync={state:'paused',lastSuccess:preview.capturedAt,error:null};cfg.active=false;this.db.put('config',cfg);
+          this.db.remove('preview');queueResearch(this,rank(preview.people,cfg.audiences[0].rules,cfg.audiences[0].attendanceFirst));
+          cfg.active=!!(cfg.active&&cfg.encryptedKey&&Date.now()<=cfg.monitorEnd);cfg.nextScan=Date.now();
+          cfg.sync={state:cfg.active?'scheduled':'paused',lastSuccess:preview.capturedAt,error:null};this.db.put('config',cfg);
         });await this.schedule();return json({ok:true});
       }
       if(action==='monitor') {
@@ -198,7 +222,9 @@ export class Workspace extends DurableObject {
       if(action==='keys/revoke') {
         const pair=this.db.prefix('key:').find(([,k])=>k.id===body.id);requireThat(pair,'not_found',404);
         requireThat(pair[1].role!=='owner'||this.keys().filter(k=>k.role==='owner'&&!k.revoked).length>1,'last_owner_key');
-        pair[1].revoked=true;this.db.put(...pair);return json({ok:true});
+        pair[1].revoked=true;this.db.put(...pair);
+        for(const [k,v] of this.db.prefix('session:'))if('key:'+v.keyHash===pair[0])this.db.remove(k);
+        return json({ok:true});
       }
       if(action==='delete') {
         requireThat(body.confirm===cfg.id,'confirmation_required');await this.erase();return json({ok:true},200,{'Set-Cookie':sessionCookie('',cfg.id,true)});
@@ -216,10 +242,11 @@ export class Workspace extends DurableObject {
     const now=Date.now(),scan=this.db.get('scan');
     const dates=[cfg.retentionEnd];
     if(cfg.encryptedKey&&cfg.monitorEnd)dates.push(cfg.monitorEnd+180001);
-    if(scan)dates.push(scan.nextAt||now);
-    else if(cfg.active&&!cfg.finalScan)dates.push(Math.max(cfg.monitorStart,Math.min(cfg.nextScan||now,cfg.monitorEnd+180000)));
-    const research=this.db.get('research-job');if(research&&!cfg.researchPaused)dates.push(research.nextAt||now);
-    for(const [,job] of this.db.prefix('icp:'))if(job.state==='queued')dates.push(job.nextAt||now);
+    const backgroundAt=cfg.backgroundRetryAt||now;
+    if(scan)dates.push(Math.max(backgroundAt,scan.nextAt||now));
+    else if(cfg.active&&!cfg.finalScan)dates.push(Math.max(backgroundAt,cfg.monitorStart,Math.min(cfg.nextScan||now,cfg.monitorEnd+180000)));
+    const research=this.db.get('research-job');if(research&&!cfg.researchPaused)dates.push(Math.max(backgroundAt,research.nextAt||now));
+    for(const [,job] of this.db.prefix('icp:'))if(job.state==='queued')dates.push(Math.max(backgroundAt,job.nextAt||now));
     await this.ctx.storage.setAlarm(Math.max(now+1000,Math.min(...dates)));
   }
   async alarm() {
@@ -231,6 +258,16 @@ export class Workspace extends DurableObject {
         this.db.put('config',cfg);this.db.remove('scan');
         for(const [k] of this.db.prefix('scan-page:'))this.db.remove(k);
       }
+      if((cfg.backgroundRetryAt||0)>Date.now())return;
+      const capacity=await this.control.backgroundSlot();
+      cfg=this.db.get('config');if(!cfg)return;
+      if(!capacity.ok) {
+        cfg.backgroundRetryAt=capacity.retryAt;cfg.sync={...cfg.sync,error:'background_capacity_paused'};
+        this.db.put('config',cfg);this.db.remove('scan');
+        for(const [k] of this.db.prefix('scan-page:'))this.db.remove(k);
+        return;
+      }
+      if(cfg.backgroundRetryAt){delete cfg.backgroundRetryAt;this.db.put('config',cfg);}
       if(!this.db.get('scan')&&cfg.active&&!cfg.finalScan&&Date.now()>=Math.max(cfg.monitorStart,cfg.nextScan||0)
         &&Date.now()<=cfg.monitorEnd+180000) startScan(this);
       const scan=this.db.get('scan');

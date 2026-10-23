@@ -6,7 +6,7 @@ const workspace=match?.[1],isDemo=location.pathname==='/demo';
 let data,filters={search:'',attendance:'all',owner:'all',answers:{}},busy=false,formDirty=false;
 let viewGeneration=0,loadsInFlight=0;
 const portraits=new Portraits();
-let audienceId=match?.[2]||'aud-1';
+let audienceId=match?.[2]||(isDemo?'aud-1':'');
 const el=(tag,attrs={},...children)=>{const node=document.createElement(tag);for(const [k,v]of Object.entries(attrs)){
   if(k.startsWith('on'))node.addEventListener(k.slice(2).toLowerCase(),v);else if(k==='class')node.className=v;
   else if(k==='text')node.textContent=v;else if(k in node&&k!=='style')node[k]=v;else node.setAttribute(k,v);
@@ -34,12 +34,18 @@ const errors={sign_in_required:'Enter your workspace access key to continue.',in
   invalid_monitor_window:'Choose a future monitoring end, a window of at most 48 hours, within the next 30 days.',
   invalid_retention:'Retention must end after monitoring and within 30 days of today.',scope_denied:'This key does not have access to that audience.',
   capacity_paused:'The service has reached its safe daily capacity. Saved data has not been deleted.',
+  background_capacity_paused:'Background processing reached the beta’s daily safety limit and retries after midnight UTC. Saved data is retained; attendance may be stale.',
   workspace_expired:'This workspace expired or was deleted.',internal_error:'The request could not finish. Please retry once; saved data is preserved.'};
 async function api(path,body,absolute=false){const response=await fetch(absolute?path:`/api/w/${workspace}/${path}`,{method:body===undefined?'GET':'POST',
   headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),credentials:'same-origin',cache:'no-store',signal:AbortSignal.timeout(60000)});
   let result;try{result=await response.json();}catch{throw new Error('The service returned an unexpected response. Saved data is unaffected.');}
   if(!response.ok){const error=new Error(errors[result.error]||String(result.error||'Request failed').replaceAll('_',' '));error.code=result.error;throw error;}return result;}
-async function task(fn){if(busy)return;busy=true;viewGeneration++;document.querySelectorAll('button').forEach(b=>b.disabled=true);try{await fn();}catch(e){toast(e.message);}finally{busy=false;document.querySelectorAll('button').forEach(b=>b.disabled=false);}}
+async function task(fn){if(busy)return;busy=true;viewGeneration++;
+  // A second select change must not appear saved while the first write is pending.
+  // Restore the original state, including controls intentionally disabled by setup.
+  const controls=[...document.querySelectorAll('button,input,select,textarea')].map(node=>[node,node.disabled]);
+  for(const [node] of controls)node.disabled=true;
+  try{await fn();}catch(e){toast(e.message);}finally{busy=false;for(const [node,disabled] of controls)node.disabled=disabled;}}
 function landing(){app.replaceChildren(
   el('section',{class:'hero'},el('div',{},el('p',{class:'eyebrow'},'YOUR EVENT. ONE SHARED PICTURE.'),el('h1',{},'Know who’s here.\nKnow who matters.'),
     el('p',{},'Turn your guest list into a private, prioritized workspace. Find the right people, see recorded check-ins, and give every conversation an owner.'),
@@ -96,7 +102,7 @@ function setupView(cfg,preview){formDirty=false;const selected=new Set(cfg.selec
       const entry={get:()=>({field:f.input.value,op:op.input.value,value:value.input.value,points:Number(points.input.value),group:Number(group.input.value),reason:reason.input.value})};rules.push(entry);ruleBox.append(wrap);
     }
     for(const r of a.rules||[])addRule(r);
-    const item={get:()=>({id,name:name.input.value,website:website.input.value,icp:summary.value,questions:qs.filter(x=>x.c.input.checked).map(x=>x.q.id),rules:rules.map(r=>r.get()),attendanceFirst:attendance.input.checked,optInQuestion:optq.input.value,optInValue:optv.input.value})};audiences.push(item);
+    const item={get:()=>({id,name:name.input.value,website:website.input.value,icp:summary.value,questions:qs.filter(x=>x.c.input.checked&&selected.has(x.q.id)).map(x=>x.q.id),rules:rules.map(r=>r.get()),attendanceFirst:attendance.input.checked,optInQuestion:optq.input.value,optInValue:optv.input.value})};audiences.push(item);
     const proposal=el('div');
     function showProposal(p){proposal.replaceChildren(el('div',{class:'good-banner stack'},el('p',{},p.summary),el('small',{},'Source excerpt: '+p.quote),el('a',{href:p.sources[0].url,target:'_blank',rel:'noopener noreferrer'},'Review business source'),
       button('Use this proposal — review rules below',()=>{summary.value=p.summary;ruleBox.replaceChildren();rules.length=0;for(const r of p.rules)addRule(r);formDirty=true;toast('Review the proposed rules, then save a fresh preview.');})));}
@@ -132,7 +138,7 @@ function setupView(cfg,preview){formDirty=false;const selected=new Set(cfg.selec
       button('Launch my private event workspace',async()=>{if(formDirty)throw new Error('Save your changed settings and review a fresh preview first.');if(!approved.input.checked)throw new Error('Confirm your review before launch.');await api('activate',{revision:preview.revision,confirmed:true,icpApproved:true});await load();},true)));
   }
 }
-async function load(){if(isDemo){data=structuredClone(demoData);renderDashboard();return;}const generation=++viewGeneration;loadsInFlight++;try{const received=await api('dashboard?audience='+encodeURIComponent(audienceId));if(generation!==viewGeneration)return;data=received;
+async function load(){if(isDemo){data=structuredClone(demoData);renderDashboard();return;}const generation=++viewGeneration;loadsInFlight++;try{const received=await api(audienceId?'dashboard?audience='+encodeURIComponent(audienceId):'dashboard');if(generation!==viewGeneration)return;data=received;audienceId=received.audience?.id||audienceId;
   if(!data.config.event||!data.config.connected&&data.role==='owner'&&!data.revision)connectView(data.config);else if(!data.revision)setupView(data.config,data.preview);else renderDashboard();
 }catch(e){if(generation!==viewGeneration)return;if(e.code==='sign_in_required')login();else app.replaceChildren(el('section',{class:'panel narrow'},el('h2',{},'Workspace unavailable'),el('p',{},e.message),button('Try again',load)));}finally{loadsInFlight--;}}
 function filtered(){return data.people.filter(p=>{
@@ -143,11 +149,11 @@ function filtered(){return data.people.filter(p=>{
 });}
 function exportView(){const internal=data.role!=='viewer',research=data.people.some(p=>p.research);
   const rows=[['Name','Company','Title','LinkedIn','Recorded check-in','Fit score','Priority group','Fit reasons',...data.questions.map(q=>q.label),...(internal?['Owner','Follow-up']:[]),...(research?['Research status','Portrait status','Experience evidence','Sources']:[])],
-    ...filtered().map(p=>[p.name,p.company,p.title,p.research?.linkedin||p.linkedin||'',p.checkedIn===null?'Unknown':p.checkedIn?'Yes':'No',p.score,p.group,p.reasons.join('; '),...data.questions.map(q=>fmt(p.answers[q.id])),
+    ...filtered().map(p=>[p.name,p.company,p.title,p.research?.linkedin||p.linkedin||'',p.checkedIn===null?'Unknown':p.checkedIn?'Yes':'No',p.score,p.group,p.reasons.join('; '),...data.questions.map(q=>(p.omittedAnswers||[]).includes(q.id)?'Omitted: exceeds beta size limit; full answer remains in Luma':fmt(p.answers[q.id])),
       ...(internal?[data.team.find(t=>t.id===p.work?.owner)?.name||'',p.work?.status||'new']:[]),...(research?[p.research?.state||'pending',p.research?.photoState||'pending',JSON.stringify(p.research?.facts||[]),(p.research?.sources||[]).map(s=>s.url).join('; ')]:[])])];
   const csv=rows.map(row=>row.map(v=>{let s=String(v??'');if(/^[\s]*[=+\-@]/.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';}).join(',')).join('\r\n');
   const a=el('a',{href:URL.createObjectURL(new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'})),download:'event-crm-view.csv'});a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
-function personCard(p){const avatar=!isDemo&&p.research?.photoState==='stored'?portraits.get(p,record=>{
+function personCard(p){const avatar=!isDemo&&p.research?.state==='corroborated'&&p.research?.photoState==='stored'?portraits.get(p,record=>{
   const node=el('div',{class:'avatar'}),img=el('img',{src:`/api/w/${workspace}/photo/${encodeURIComponent(p.id)}`,alt:p.name+' — source-attributed portrait',loading:'lazy',onLoad:()=>{record.state='loaded';updatePhotoCounter();},onError:()=>{record.state='failed';node.replaceChildren(initials(p.name));updatePhotoCounter();}});node.append(img);return node;
 }):el('div',{class:'avatar'},initials(p.name));
   const state=p.checkedIn===true?'● Checked in':p.checkedIn===false?'Not checked in':'Check-in unknown';
@@ -160,7 +166,7 @@ function personCard(p){const avatar=!isDemo&&p.research?.photoState==='stored'?p
       try{p.work=await api('work',{personId:p.id,audience:audienceId,owner:owner.input.value||null,status:status.input.value,revision:p.work?.revision||0});toast('Team work saved.');}catch(e){await load();throw e;}});
     owner.input.addEventListener('change',update);status.input.addEventListener('change',update);card.append(el('div',{class:'work-controls'},owner.node,status.node));
   }
-  const detail=el('details',{},el('summary',{},'Answers & professional context'),data.questions.map(q=>el('div',{class:'answer'},el('b',{},q.label),fmt(p.answers[q.id])||'Not provided')));
+  const detail=el('details',{},el('summary',{},'Answers & professional context'),data.questions.map(q=>el('div',{class:'answer'},el('b',{},q.label),(p.omittedAnswers||[]).includes(q.id)?'Answer exceeds this beta’s size limit. Full answer remains in Luma; not used for ranking.':fmt(p.answers[q.id])||'Not provided')));
   if(p.research){detail.append(el('div',{class:'answer'},el('b',{},'Research'),String(p.research.state||'pending').replaceAll('_',' '),el('p',{class:'muted'},p.research.reason||'Automatic research is queued separately from attendance.'),
     el('small',{},p.research.photoReason||'Portrait: '+String(p.research.photoState||'pending').replaceAll('_',' '))));
     for(const fact of p.research.facts||[])detail.append(el('div',{class:'answer'},el('b',{},[fact.title,fact.company,fact.period].filter(Boolean).join(' · ')),fact.quote,el('a',{href:fact.source,target:'_blank',rel:'noopener noreferrer'},' Source ↗')));
@@ -177,6 +183,7 @@ function renderDashboard(){formDirty=false;const cfg=data.config,stale=!isDemo&&
     el('h1',{},cfg.event.name),el('div',{class:'status-line'},isDemo?'Fictional data · changes stay in this tab':`${String(cfg.sync?.state||'unknown').replaceAll('_',' ')} · last complete source check ${dt(data.capturedAt)}${stale?' · STALE':''}`)),
     isDemo?el('div',{class:'good-banner'},'Explore filters, ownership, and priority groups. No Luma key is used and no messages are sent.'):cfg.sync?.error?el('div',{class:'error-banner'},(errors[cfg.sync.error]||cfg.sync.error.replaceAll('_',' '))+' Last good data remains visible.'):el('span',{hidden:true}),
     cfg.researchState==='budget_paused'?el('div',{class:'error-banner'},'Automatic research paused at its spending limit. Completed profiles, portraits and team work remain available; attendance polling is independent.'):el('span',{hidden:true}),
+    data.extraCount>0?el('div',{class:'good-banner'},`${data.extraCount} new registrations are outside the reviewed roster. The owner can preview and adopt them in Workspace controls.`):el('span',{hidden:true}),
     el('div',{class:'stats'},...[[data.people.length,'Guests in this view'],[checked,'Recorded check-ins'],[data.people.filter(p=>p.score>0).length,'Positive fit evidence'],[data.people.length-known,'Unknown attendance']].map(([n,t])=>el('div',{class:'stat'},el('strong',{},n),el('span',{},t)))),
     el('div',{class:'tabs'},data.audiences.map(a=>{const b=button(a.name,async()=>{audienceId=a.id;filters.answers={};if(isDemo){selectDemoAudience(data,a.id);renderDashboard();}else{history.replaceState(null,'',`/w/${workspace}/a/${a.id}`);await load();}});b.classList.toggle('selected',a.id===audienceId);return b;})),
     el('div',{class:'toolbar'},search.node,attendance.node,data.role!=='viewer'?owner.node:null,button('Clear filters',()=>{filters={search:'',attendance:'all',owner:'all',answers:{}};renderDashboard();})),
@@ -207,4 +214,4 @@ function privacy(){app.replaceChildren(el('section',{class:'panel narrow privacy
   el('p',{},'Research and service quotas can pause new work; they never erase your last good snapshot. Public source code contains only fictional examples. Your workspace is not public.')));}
 if(location.pathname==='/privacy')privacy();else if(workspace||isDemo)load();else landing();
 setInterval(()=>{if(!workspace||busy||formDirty||loadsInFlight||document.hidden||app.querySelector('details[open]'))return;const focused=document.activeElement;if(focused&&['INPUT','SELECT','TEXTAREA'].includes(focused.tagName))return;
-  if(data?.config?.active||data?.config?.sync?.state==='scanning'||data?.config?.researchState==='running'||Object.values(data?.config?.icpProposals||{}).some(j=>j?.state==='queued'))load();},20000);
+  if(data?.config?.active||data?.config?.sync?.state==='scanning'||data?.config?.researchState==='running'||Object.values(data?.config?.icpProposals||{}).some(j=>j?.state==='queued'))load();},60000);

@@ -68,8 +68,10 @@ export async function scanStep(w) {
         if(scan.preview) db.put('preview',{people:result.guests,event:after,capturedAt,revision:token()});
         else {
           const live=new Map(result.guests.map(p=>[p.id,p]));
-          // Only explicit attendance/status fields update. Answers and identity stay frozen.
-          db.put('snapshot',{...old,people:old.people.map(p=>({...p,checkedIn:live.get(p.id).checkedIn,status:live.get(p.id).status})),
+          // Attendance/status and sharing consent refresh; other answers and identity stay frozen.
+          const consentFields=[...new Set(freshCfg.audiences.map(a=>a.optInQuestion).filter(Boolean))];
+          db.put('snapshot',{...old,people:old.people.map(p=>({...p,checkedIn:live.get(p.id).checkedIn,status:live.get(p.id).status,
+            answers:{...p.answers,...Object.fromEntries(consentFields.map(id=>[id,live.get(p.id).answers[id]??'']))}})),
             capturedAt,revision:old.revision+1,extraCount:result.extra.length});
         }
         freshCfg.sync={state:scan.preview?'preview_ready':scan.started>=freshCfg.monitorEnd?'ended':capturedAt>=freshCfg.monitorEnd?'finalizing':'live',
@@ -89,11 +91,13 @@ export async function scanStep(w) {
     if(code==='source_changed'&&scan.attempt===0&&(scan.preview||Date.now()<fresh.monitorEnd+120000)) {
       startScan(w,{preview:scan.preview,attempt:1});return;
     }
-    const failures=Math.min(6,(fresh.sync?.failures||0)+1);
+    // A busy door is not an infrastructure outage. Keep strict validation, without
+    // exponentially delaying the next complete attempt when the source is moving.
+    const failures=code==='source_changed'?0:Math.min(6,(fresh.sync?.failures||0)+1);
     fresh.sync={...fresh.sync,state:'attention',error:code,failures};
     const permanent=['luma_reconnect_required','credential_unavailable','cohort_review_required','question_changed','attendance_unknown'];
     if(permanent.includes(code)) fresh.active=false;
-    fresh.nextScan=Date.now()+Math.max(error.retryAfter*1000||0,Math.min(3600000,60000*2**(failures-1)));
+    fresh.nextScan=Date.now()+Math.max(60000,error.retryAfter*1000||0,Math.min(3600000,60000*2**(failures-1)));
     db.put('config',fresh);
   }
 }
